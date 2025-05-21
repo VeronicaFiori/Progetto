@@ -1,0 +1,26 @@
+# Ambiente virtuale
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.pyo
+*.pyd
+
+# Log / output
+*.log
+*.out
+
+# Dati pesanti (se non vuoi versionarli)
+*.wav
+*.mp4
+*.mid
+
+# File di sistema
+.DS_Store
+Thumbs.db
+
+# Jupyter e IPython
+.ipynb_checkpoints/
+*.checkpoint

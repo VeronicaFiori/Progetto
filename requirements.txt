@@ -1,0 +1,7 @@
+tensorflow
+librosa
+matplotlib
+numpy
+pandas
+moviepy
+basic-pitch
