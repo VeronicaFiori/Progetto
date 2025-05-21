@@ -7,15 +7,15 @@ from pathlib import Path
 
 def convert_wav_to_midi(wav_path, midi_path):
     y, sr = librosa.load(wav_path)
-    f0, _, _ = librosa.pyin(y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+    f0 = librosa.yin(y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
     times = librosa.times_like(f0, sr=sr)
-    
+
     midi = pretty_midi.PrettyMIDI()
-    instrument = pretty_midi.Instrument(program=0)  # piano
-    
+    instrument = pretty_midi.Instrument(program=0)
+
     prev_note = None
     for t, freq in zip(times, f0):
-        if freq is not None and not np.isnan(freq):
+        if not np.isnan(freq):
             midi_note = int(librosa.hz_to_midi(freq))
             if prev_note is None or prev_note.pitch != midi_note:
                 if prev_note is not None:
