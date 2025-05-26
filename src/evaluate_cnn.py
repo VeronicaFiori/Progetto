@@ -262,7 +262,7 @@ MODEL_PATH = "models/cnn_genre_classifier.keras"
 
 # Proviamo a trovare la cartella 'output/generated' in OneDrive o Desktop
 possible_generated_dirs = [
-    Path.home() / "OneDrive" / "Desktop" / "Progetto" / "output" / "generated",
+    Path.home() / "OneDrive" / "Desktop" / "Progetto-1" / "output" / "generated",
     Path.home() / "Desktop" / "Progetto" / "output" / "generated"
 ]
 
@@ -298,12 +298,22 @@ GENRES = sorted(os.listdir(DATASET_DIR))
 
 
 def midi_to_wav(midi_path):
-    soundfont_path = Path.home() / "Desktop" / "FluidR3" / "FluidR3_GM.sf2"
-    print(f"[DEBUG] Verifica path SoundFont: {soundfont_path}")
-    print(f"[DEBUG] Esiste il file? {soundfont_path.exists()}")
-    if not soundfont_path.exists():
-        print(f"❌ SoundFont non trovato: {soundfont_path}")
+    # Percorsi possibili del SoundFont
+    possible_soundfonts = [
+        Path.home() / "OneDrive" / "Desktop" / "FluidR3" / "FluidR3_GM.sf2",  
+        Path.home() / "Desktop" / "FluidR3" / "FluidR3_GM.sf2"               
+    ]
+
+    for path in possible_soundfonts:
+        if path.exists():
+            soundfont_path = path
+            break
+    else:
+        print("❌ Nessun SoundFont trovato nei percorsi noti.")
         return None
+
+    print(f"[DEBUG] Uso SoundFont: {soundfont_path}")
+
     #Salva solo momentaneamente il nuovo audio .wav
     #wav_path = str(Path(midi_path).with_suffix('.wav'))
     
