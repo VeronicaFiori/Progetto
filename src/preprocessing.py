@@ -5,6 +5,7 @@ import pretty_midi
 import numpy as np
 import os
 from pathlib import Path
+import librosa
 
 def midi_to_note_sequence(midi_file):
     """Converte un file MIDI in una lista di note (pitch, start, end)."""
@@ -76,3 +77,10 @@ if __name__ == "__main__":
         exit(1)
 
     X, y = load_dataset(str(midi_folder), sequence_length=50)
+
+
+def extract_log_mel_spectrogram(mid_path, n_mels=128, duration=30, sr=22050):
+    y, _ = librosa.load(mid_path, sr=sr, duration=duration)
+    mel_spec = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels)
+    log_mel_spec = librosa.power_to_db(mel_spec)
+    return log_mel_spec
