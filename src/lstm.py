@@ -81,28 +81,23 @@ def prepare_sequences(notes, n_vocab):
     return (network_input, network_output)
 
 def create_network(network_input, n_vocab):
-    """ Create the structure of the neural network """
+    """ Create the structure of the simplified neural network """
     model = Sequential()
-    model.add(LSTM(512, input_shape=(network_input.shape[1], network_input.shape[2]), recurrent_dropout=0.3, return_sequences=True))
-    model.add(LSTM(512, return_sequences=True, recurrent_dropout=0.3))
-    model.add(LSTM(512))
-    model.add(BatchNorm())
+    model.add(LSTM(256, input_shape=(network_input.shape[1], network_input.shape[2]), return_sequences=True))
     model.add(Dropout(0.3))
-    model.add(Dense(256))
-    model.add(Activation('relu'))
-    model.add(BatchNorm())
+    model.add(LSTM(256))
     model.add(Dropout(0.3))
-    model.add(Dense(n_vocab))
-    model.add(Activation('softmax'))
+    model.add(Dense(128, activation='relu'))
+    model.add(Dense(n_vocab, activation='softmax'))
     model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
-
     return model
+
 
 def train(model, network_input, network_output):
     """ Train the neural network """
     filepath = "weights.keras"
     checkpoint = ModelCheckpoint(filepath, monitor='loss', verbose=0, save_best_only=True, mode='min')
-    model.fit(network_input, network_output, epochs=1, batch_size=128, callbacks=[checkpoint])
+    model.fit(network_input, network_output, epochs=30, batch_size=128, callbacks=[checkpoint])
 
 if __name__ == '__main__':
     train_network()

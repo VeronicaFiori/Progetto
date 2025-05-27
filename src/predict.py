@@ -1,150 +1,102 @@
-""" This module generates notes for a midi file using the
-    trained neural network """
 import pickle
 from pathlib import Path
-import numpy
+import numpy as np
 from music21 import instrument, note, stream, chord
 from keras.models import Sequential
-from keras.layers import Dense
-from keras.layers import Dropout
-from keras.layers import LSTM
+from keras.layers import LSTM, Dense, Dropout, Activation
 from keras.layers import BatchNormalization as BatchNorm
-from keras.layers import Activation
-from keras.models import load_model
 
 def generate():
-    """ Generate a piano midi file """
-    #load the notes used to train the model
+    """Generate a piano midi file using a trained model."""
     with open('data/notes', 'rb') as filepath:
         notes = pickle.load(filepath)
 
-    # Get all pitch names
-    pitchnames = sorted(set(item for item in notes))
-    # Get all pitch names
-    n_vocab = len(set(notes))
-
+    pitchnames = sorted(set(notes))
+    n_vocab = len(pitchnames)
     network_input, normalized_input = prepare_sequences(notes, pitchnames, n_vocab)
+
     model = create_network(normalized_input, n_vocab)
     prediction_output = generate_notes(model, network_input, pitchnames, n_vocab)
     create_midi(prediction_output)
 
 def prepare_sequences(notes, pitchnames, n_vocab):
-    """ Prepare the sequences used by the Neural Network """
-    # map between notes and integers and back
-    note_to_int = dict((note, number) for number, note in enumerate(pitchnames))
-
+    note_to_int = {note: number for number, note in enumerate(pitchnames)}
     sequence_length = 100
     network_input = []
-    output = []
-    for i in range(0, len(notes) - sequence_length, 1):
+    for i in range(0, len(notes) - sequence_length):
         sequence_in = notes[i:i + sequence_length]
-        sequence_out = notes[i + sequence_length]
-        network_input.append([note_to_int[char] for char in sequence_in])
-        output.append(note_to_int[sequence_out])
+        network_input.append([note_to_int[n] for n in sequence_in])
 
-    n_patterns = len(network_input)
-
-    # reshape the input into a format compatible with LSTM layers
-    normalized_input = numpy.reshape(network_input, (n_patterns, sequence_length, 1))
-    # normalize input
+    normalized_input = np.reshape(network_input, (len(network_input), sequence_length, 1))
     normalized_input = normalized_input / float(n_vocab)
 
     return (network_input, normalized_input)
 
-#def create_network(*args, **kwargs):
-#    """ Load the trained model """
-#    model = load_model('weights-improvement-01-7.0968-bigger.keras')
-   
-#    return model
 def create_network(network_input, n_vocab):
-    """ create the structure of the neural network """
     model = Sequential()
-    model.add(LSTM(
-        512,
-        input_shape=(network_input.shape[1], network_input.shape[2]),
-        recurrent_dropout=0.3,
-        return_sequences=True
-    ))
-    model.add(LSTM(512, return_sequences=True, recurrent_dropout=0.3,))
-    model.add(LSTM(512))
+    model.add(LSTM(256, input_shape=(network_input.shape[1], network_input.shape[2]), return_sequences=True))
+    model.add(Dropout(0.3))
+    model.add(LSTM(256))
     model.add(BatchNorm())
     model.add(Dropout(0.3))
-    model.add(Dense(256))
-    model.add(Activation('relu'))
+    model.add(Dense(128, activation='relu'))
     model.add(BatchNorm())
     model.add(Dropout(0.3))
-    model.add(Dense(n_vocab))
-    model.add(Activation('softmax'))
+    model.add(Dense(n_vocab, activation='softmax'))
     model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
-
-    # Load the weights to each node
-    model_path = Path(__file__).resolve().parent.parent / 'weights.keras'
-    print(f"🔎 Caricamento pesi da: {model_path}")
-    model.load_weights(model_path)
-
-    #model.load_weights('weights.hdf5')
-
     return model
 
-def generate_notes(model, network_input, pitchnames, n_vocab):
-    """ Generate notes from the neural network based on a sequence of notes """
-    # pick a random sequence from the input as a starting point for the prediction
-    start = numpy.random.randint(0, len(network_input)-1)
+def sample_with_temperature(predictions, temperature=0.8):
+    predictions = np.asarray(predictions).astype("float64")
+    predictions = np.log(predictions + 1e-8) / temperature
+    exp_preds = np.exp(predictions)
+    predictions = exp_preds / np.sum(exp_preds)
+    return np.random.choice(len(predictions), p=predictions)
 
-    int_to_note = dict((number, note) for number, note in enumerate(pitchnames))
-
+def generate_notes(model, network_input, pitchnames, n_vocab, num_notes=500):
+    start = np.random.randint(0, len(network_input) - 1)
+    int_to_note = {number: note for number, note in enumerate(pitchnames)}
     pattern = network_input[start]
     prediction_output = []
 
-    # generate 500 notes
-    for note_index in range(500):
-        prediction_input = numpy.reshape(pattern, (1, len(pattern), 1))
-        prediction_input = prediction_input / float(n_vocab)
-
+    for _ in range(num_notes):
+        prediction_input = np.reshape(pattern, (1, len(pattern), 1)) / float(n_vocab)
         prediction = model.predict(prediction_input, verbose=0)
-
-        index = numpy.argmax(prediction)
+        index = sample_with_temperature(prediction[0], temperature=0.8)
         result = int_to_note[index]
         prediction_output.append(result)
 
         pattern.append(index)
-        pattern = pattern[1:len(pattern)]
+        pattern = pattern[1:]
 
     return prediction_output
 
 def create_midi(prediction_output):
-    """ convert the output from the prediction to notes and create a midi file
-        from the notes """
     offset = 0
     output_notes = []
 
-    # create note and chord objects based on the values generated by the model
     for pattern in prediction_output:
-        # pattern is a chord
-        if ('.' in pattern) or pattern.isdigit():
+        if '.' in pattern or pattern.isdigit():
             notes_in_chord = pattern.split('.')
-            notes = []
-            for current_note in notes_in_chord:
-                new_note = note.Note(int(current_note))
-                new_note.storedInstrument = instrument.Piano()
-                notes.append(new_note)
-            new_chord = chord.Chord(notes)
+            chord_notes = [note.Note(int(n)) for n in notes_in_chord]
+            for n in chord_notes:
+                n.storedInstrument = instrument.Piano()
+            new_chord = chord.Chord(chord_notes)
             new_chord.offset = offset
             output_notes.append(new_chord)
-        # pattern is a note
         else:
             new_note = note.Note(pattern)
             new_note.offset = offset
             new_note.storedInstrument = instrument.Piano()
             output_notes.append(new_note)
 
-        # increase offset each iteration so that notes do not stack
         offset += 0.5
 
-    midi_stream = stream.Stream(output_notes)
     output_dir = Path("output/generated")
     output_dir.mkdir(parents=True, exist_ok=True)
+    midi_stream = stream.Stream(output_notes)
     midi_stream.write('midi', fp=output_dir / 'test_output.mid')
+    print("✅ File MIDI generato in:", output_dir / 'test_output.mid')
 
 if __name__ == '__main__':
     generate()
