@@ -79,8 +79,21 @@ if __name__ == "__main__":
     X, y = load_dataset(str(midi_folder), sequence_length=50)
 
 
-def extract_log_mel_spectrogram(mid_path, n_mels=128, duration=30, sr=22050):
-    y, _ = librosa.load(mid_path, sr=sr, duration=duration)
-    mel_spec = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels)
-    log_mel_spec = librosa.power_to_db(mel_spec)
-    return log_mel_spec
+def extract_log_mel_spectrogram(file_path, n_mels=128, duration=30, sr=22050, hop_length=512):
+    try:
+        y, _ = librosa.load(file_path, sr=sr, duration=duration)
+        mel_spec = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels, hop_length=hop_length)
+        log_mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
+
+        # Uniforma a dimensioni 128x128 (utile per CNN)
+        if log_mel_spec.shape[1] < 128:
+            pad_width = 128 - log_mel_spec.shape[1]
+            log_mel_spec = np.pad(log_mel_spec, ((0, 0), (0, pad_width)), mode='constant')
+        else:
+            log_mel_spec = log_mel_spec[:, :128]
+
+        return log_mel_spec
+
+    except Exception as e:
+        print(f"Errore durante l'elaborazione di {file_path}: {e}")
+        raise

@@ -6,6 +6,10 @@ from keras.models import Sequential
 from keras.layers import LSTM, Dense, Dropout, Activation
 from keras.layers import BatchNormalization as BatchNorm
 
+import matplotlib.pyplot as plt
+import seaborn as sns
+from collections import Counter
+
 def generate():
     """Generate a piano midi file using a trained model."""
     with open('data/notes', 'rb') as filepath:
@@ -16,8 +20,11 @@ def generate():
     network_input, normalized_input = prepare_sequences(notes, pitchnames, n_vocab)
 
     model = create_network(normalized_input, n_vocab)
+    model.load_weights('weights.keras')
+
     prediction_output = generate_notes(model, network_input, pitchnames, n_vocab)
     create_midi(prediction_output)
+    plot_statistics(prediction_output)
 
 def prepare_sequences(notes, pitchnames, n_vocab):
     note_to_int = {note: number for number, note in enumerate(pitchnames)}
@@ -94,9 +101,44 @@ def create_midi(prediction_output):
 
     output_dir = Path("output/generated")
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Trova il prossimo numero disponibile per il file MIDI
+    existing_files = list(output_dir.glob("test_output*.mid"))
+    existing_indices = [
+        int(f.stem.replace("test_output", ""))
+        for f in existing_files if f.stem.replace("test_output", "").isdigit()
+    ]
+    next_index = max(existing_indices, default=0) + 1
+    output_path = output_dir / f"test_output{next_index}.mid"
+
+    # Salva il file MIDI
     midi_stream = stream.Stream(output_notes)
-    midi_stream.write('midi', fp=output_dir / 'test_output.mid')
-    print("✅ File MIDI generato in:", output_dir / 'test_output.mid')
+    midi_stream.write('midi', fp=output_path)
+    print("✅ File MIDI generato in:", output_path)
+
+
+def plot_statistics(prediction_output):
+    sns.set(style="whitegrid")
+    note_counts = Counter(prediction_output)
+    chords = [p for p in prediction_output if '.' in p or p.isdigit()]
+    single_notes = [p for p in prediction_output if not ('.' in p or p.isdigit())]
+
+    # Frequenze
+    plt.figure(figsize=(14, 5))
+    top_notes = note_counts.most_common(20)
+    labels, values = zip(*top_notes)
+    plt.bar(labels, values, color="skyblue")
+    plt.title("🎼 Frequenze delle 20 note/accordi più comuni")
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+    # Note vs accordi
+    plt.figure(figsize=(6, 4))
+    plt.pie([len(single_notes), len(chords)], labels=["Note", "Accordi"], autopct="%1.1f%%", startangle=140, colors=["#7fcdbb", "#ef8a62"])
+    plt.title("Distribuzione: Note vs Accordi")
+    plt.tight_layout()
+    plt.show()
 
 if __name__ == '__main__':
     generate()

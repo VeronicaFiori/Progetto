@@ -1,19 +1,32 @@
-import tensorflow as tf
-from src.model_cnn import build_cnn_model
 import os
-import numpy as np
-from sklearn.model_selection import train_test_split
-from src.preprocessing import extract_log_mel_spectrogram
-from pathlib import Path
 import random
+import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+from pathlib import Path
+from sklearn.model_selection import train_test_split
+from src.model_cnn import build_cnn_model
+from src.preprocessing import extract_log_mel_spectrogram
+from collections import Counter
+import librosa.display
 
+# Impostazioni di riproducibilità
 SEED = 42
 np.random.seed(SEED)
 tf.random.set_seed(SEED)
 random.seed(SEED)
 os.environ['PYTHONHASHSEED'] = str(SEED)
 
-# Cerca la cartella del dataset
+# Percorsi e parametri
+MODEL_PATH = "models/cnn_genre_classifier.keras"
+INPUT_SHAPE = (128, 128, 1)
+EPOCHS = 30
+BATCH_SIZE = 32
+
+# 🔧 Crea la directory models se non esiste
+os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+
+# Trova la cartella del dataset
 possible_dataset_dirs = [
     Path.home() / "OneDrive" / "Desktop" / "Data" / "genres_original",
     Path.home() / "Desktop" / "Data" / "genres_original"
@@ -29,11 +42,6 @@ else:
 
 GENRES = sorted(os.listdir(DATASET_DIR))
 
-MODEL_PATH = "models/cnn_genre_classifier.keras"
-INPUT_SHAPE = (128, 128, 1)
-EPOCHS = 30
-BATCH_SIZE = 32
-
 def load_data():
     X, y = [], []
     for genre_idx, genre in enumerate(GENRES):
@@ -48,26 +56,74 @@ def load_data():
                         X.append(spec)
                         y.append(genre_idx)
                 except Exception as e:
-                    print(f"Errore su {file}: {e}")
+                    print(f"❌ Errore su {file}: {e}")
     X = np.array(X)[..., np.newaxis]
     y = tf.keras.utils.to_categorical(y, num_classes=len(GENRES))
     return X, y
 
+def debug_info(X, y):
+    print(f"\n📊 Shape input: {X.shape} (deve essere: [N, 128, 128, 1])")
+    print(f"🔍 Valori spettrogramma: min={X.min()}, max={X.max()}, mean={X.mean():.2f}")
+
+    label_counts = Counter(np.argmax(y, axis=1))
+    print("\n🎼 Distribuzione classi:")
+    for i, count in sorted(label_counts.items()):
+        print(f" - {GENRES[i]}: {count} esempi")
+
+    # Visualizza uno spettrogramma campione
+    plt.figure(figsize=(6, 4))
+    librosa.display.specshow(X[0].squeeze(), sr=22050, hop_length=512, x_axis='time', y_axis='mel')
+    plt.colorbar(format='%+2.0f dB')
+    plt.title("Spettrogramma di esempio")
+    plt.tight_layout()
+    plt.show()
+
+def plot_training_history(history):
+    plt.figure(figsize=(12, 4))
+
+    # Accuratezza
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history['accuracy'], label='Train')
+    plt.plot(history.history['val_accuracy'], label='Validation')
+    plt.title('📈 Accuratezza')
+    plt.xlabel('Epoca')
+    plt.ylabel('Accuratezza')
+    plt.legend()
+
+    # Perdita
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history['loss'], label='Train')
+    plt.plot(history.history['val_loss'], label='Validation')
+    plt.title('📉 Perdita')
+    plt.xlabel('Epoca')
+    plt.ylabel('Perdita')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.show()
+
 def main():
     X, y = load_data()
-    
+    debug_info(X, y)
+
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=SEED)
 
-    # X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2)
     model = build_cnn_model(INPUT_SHAPE, num_classes=len(GENRES))
     model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-    model.fit(X_train, y_train, validation_data=(X_val, y_val),
-              epochs=EPOCHS, batch_size=BATCH_SIZE,
-              callbacks=[
-                  tf.keras.callbacks.ModelCheckpoint(MODEL_PATH, save_best_only=True),
-                  tf.keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True)
-              ])
+
+    history = model.fit(
+        X_train, y_train,
+        validation_data=(X_val, y_val),
+        epochs=EPOCHS,
+        batch_size=BATCH_SIZE,
+        callbacks=[
+            tf.keras.callbacks.ModelCheckpoint(MODEL_PATH, save_best_only=True),
+            tf.keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True)
+        ]
+    )
+
     print(f"✅ Modello salvato in: {MODEL_PATH}")
+    plot_training_history(history)
 
 if __name__ == "__main__":
     main()
