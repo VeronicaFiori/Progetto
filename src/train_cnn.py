@@ -9,6 +9,8 @@ from src.model_cnn import build_cnn_model
 from src.preprocessing import extract_log_mel_spectrogram
 from collections import Counter
 import librosa.display
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
 
 # Impostazioni di riproducibilità
 SEED = 42
@@ -102,6 +104,41 @@ def plot_training_history(history):
     plt.tight_layout()
     plt.show()
 
+
+"""
+def plot_confusion_matrix(model, X_val, y_val):
+    y_pred = model.predict(X_val, verbose=0)
+    y_pred_classes = np.argmax(y_pred, axis=1)
+    y_true_classes = np.argmax(y_val, axis=1)
+
+    cm = confusion_matrix(y_true_classes, y_pred_classes)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=GENRES)
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    disp.plot(ax=ax, cmap=plt.cm.Blues, xticks_rotation=45)
+    plt.title("🎼 Matrice di Confusione - Generi Musicali")
+    plt.tight_layout()
+    plt.show()
+"""
+def plot_confusion_matrix(model, X_val, y_val, GENRES, normalize=False):
+    """
+    Calcola e visualizza la matrice di confusione. Se 'normalize' è True, visualizza valori normalizzati.
+    """
+    y_pred = model.predict(X_val, verbose=0)
+    y_pred_classes = np.argmax(y_pred, axis=1)
+    y_true_classes = np.argmax(y_val, axis=1)
+
+    cm = confusion_matrix(y_true_classes, y_pred_classes)
+    if normalize:
+        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=GENRES)
+    fig, ax = plt.subplots(figsize=(10, 8))
+    disp.plot(ax=ax, cmap=plt.cm.Blues, xticks_rotation=45)
+    plt.title("🎼 Matrice di Confusione - Generi Musicali")
+    plt.tight_layout()
+    plt.show()
+
 def main():
     X, y = load_data()
     debug_info(X, y)
@@ -124,6 +161,9 @@ def main():
 
     print(f"✅ Modello salvato in: {MODEL_PATH}")
     plot_training_history(history)
+    plot_confusion_matrix(model, X_val, y_val, GENRES, normalize=False)
+
+
 
 if __name__ == "__main__":
     main()
