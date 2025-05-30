@@ -111,7 +111,7 @@ def train(model, network_input, network_output):
     history = model.fit(
         network_input,
         network_output,
-        epochs=30,
+        epochs=1,
         batch_size=128,
         validation_split=0.2,  # <- opzionale: usa il 20% dei dati per la validazione
         callbacks=[checkpoint]
