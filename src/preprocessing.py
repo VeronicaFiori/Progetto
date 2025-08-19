@@ -305,7 +305,6 @@ def make_mfcc_image(file_path, n_mfcc=MFCC_N_IMG, img_shape=MFCC_IMG_SHAPE, sr=S
 
 # ----------------------------
 # Fuzzificazione semplice (membership functions)
-# - genera membership per 'low','mid','high' per colonne scelte
 # ----------------------------
 def fuzzify_column(values, method='gauss', centers=None, widths=None):
     """
