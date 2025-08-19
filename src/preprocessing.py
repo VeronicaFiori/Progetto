@@ -162,14 +162,29 @@ from tensorflow.keras import layers, models, callbacks
 # ----------------------------
 # CONFIGURAZIONE (modifica se necessario)
 # ----------------------------
-DATASET_PATH = r"C:\Users\veryf\Desktop\GTZAN\genres_original"
+paths = [
+    r"C:\Users\catal\OneDrive\Desktop\GTZAN\genres_original",
+    r"C:\Users\veryf\Desktop\GTZAN\genres_original"
+]
+
+DATASET_PATH = None
+for p in paths:
+    if os.path.exists(p):
+        DATASET_PATH = p
+        break
+
+if DATASET_PATH is None:
+    raise FileNotFoundError("Nessun percorso dataset valido trovato.")
+
+print(f"Percorso dataset selezionato: {DATASET_PATH}")
+
 SAMPLE_RATE = 22050
-N_MFCC = 20
-SEQ_LEN = 130        # frames per sequence MFCC (LSTM)
+N_MFCC = 40          # più info timbriche rispetto a 20
+SEQ_LEN = 260        # ≈ 6 sec invece di 3 → più contesto per LSTM
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
-CNN_EPOCHS = 30
-LSTM_EPOCHS = 30
+CNN_EPOCHS = 40
+LSTM_EPOCHS = 40
 CNN_BATCH = 32
 LSTM_BATCH = 32
 RF_N_ESTIMATORS = 150
@@ -180,7 +195,7 @@ TSNE_PERPLEXITY = 30
 TSNE_N_ITER = 1000
 MFCC_IMG_SHAPE = (128, 128)
 MFCC_N_IMG = 40
-MFCC_CNN_EPOCHS = 30
+MFCC_CNN_EPOCHS = 40
 MFCC_CNN_BATCH = 32
 
 MAX_FILES = None  # imposta ad es. 200 per debug
@@ -427,7 +442,7 @@ def build_lstm(seq_len, n_mfcc, n_classes):
 # ----------------------------
 # Fuzzy C-means utilities (già presenti)
 # ----------------------------
-def train_fuzzy_cmeans(X_train, y_train, n_clusters=CMEANS_CLUSTERS, m=CMEANS_M):
+"""def train_fuzzy_cmeans(X_train, y_train, n_clusters=CMEANS_CLUSTERS, m=CMEANS_M):
     data = X_train.T
     cntr, u, u0, d, jm, p, fpc = cmeans(data, c=n_clusters, m=m, error=0.005, maxiter=1000, init=None)
     unique_classes = np.unique(y_train)
@@ -472,7 +487,7 @@ def predict_fuzzy_from_clusters(centers, P_cluster_genre, X_test, m=CMEANS_M):
     for s in range(n_samples):
         probs[s] = np.dot(u_test[:, s], P_cluster_genre)
     preds = np.argmax(probs, axis=1)
-    return preds, probs, u_test
+    return preds, probs, u_test """
 
 # ----------------------------
 # Grad-CAM robust + plotting (versione che salva png)
@@ -733,26 +748,28 @@ def main():
         print(classification_report(y_tab_test, y_pred, target_names=classes, zero_division=0))
         plot_confusion(confusion_matrix(y_tab_test, y_pred), classes, title=f"{name.upper()} Confusion Matrix")
 
-    # Fuzzy C-means on tabular scaled features
-    print("\n3) Fuzzy C-Means (tabular scaled features)...")
+   # Fuzzy C-means on tabular scaled features
+    """print("\n3) Fuzzy C-Means (tabular scaled features)...")
     centers, u_train, P_cluster_genre, unique_classes = train_fuzzy_cmeans(X_tab_train, y_tab_train)
     fuzzy_preds_test, fuzzy_probs_test, u_test = predict_fuzzy_from_clusters(centers, P_cluster_genre, X_tab_test)
     print("Fuzzy accuracy:", accuracy_score(y_tab_test, fuzzy_preds_test))
     print(classification_report(y_tab_test, fuzzy_preds_test, target_names=classes, zero_division=0))
-    plot_confusion(confusion_matrix(y_tab_test, fuzzy_preds_test), classes, title="Fuzzy Confusion")
+    plot_confusion(confusion_matrix(y_tab_test, fuzzy_preds_test), classes, title="Fuzzy Confusion")""" 
+    
+    
 
     # Ensemble RF + Fuzzy (su tabular)
-    print("\n4) Ensemble RF + Fuzzy (tabular):")
+    """print("\n4) Ensemble RF + Fuzzy (tabular):")
     rf = tab_models['rf']
     rf_proba_test = rf.predict_proba(X_tab_test)
     ensemble_probs = 0.6 * rf_proba_test + 0.4 * fuzzy_probs_test
     ensemble_pred = np.argmax(ensemble_probs, axis=1)
     print("Ensemble accuracy:", accuracy_score(y_tab_test, ensemble_pred))
     print(classification_report(y_tab_test, ensemble_pred, target_names=classes, zero_division=0))
-    plot_confusion(confusion_matrix(y_tab_test, ensemble_pred), classes, title="Ensemble RF+Fuzzy Confusion")
+    plot_confusion(confusion_matrix(y_tab_test, ensemble_pred), classes, title="Ensemble RF+Fuzzy Confusion")"""
 
     # CNN su mel-spectrogram
-    print("\n5) CNN su mel-spectrogram (training)...")
+    print("\n3) CNN su mel-spectrogram (training)...")
     X_mel_norm = (X_mel - X_mel.min()) / (X_mel.max() - X_mel.min() + 1e-9)
     X_mel_norm = X_mel_norm[..., np.newaxis]
     files_all = df_tab['file'].values
@@ -772,7 +789,7 @@ def main():
     plot_training_curves(history_cnn_mel, title_prefix="Mel-spectrogram CNN")
 
     # CNN su MFCC-image
-    print("\n6) CNN su MFCC-image (training)...")
+    print("\n4) CNN su MFCC-image (training)...")
     X_mfcc_img_norm = (X_mfcc_img - X_mfcc_img.min()) / (X_mfcc_img.max() - X_mfcc_img.min() + 1e-9)
     X_mfcc_img_norm = X_mfcc_img_norm[..., np.newaxis]
     X_mfcc_tr, X_mfcc_te, y_mfcc_tr, y_mfcc_te = train_test_split(X_mfcc_img_norm, y_enc, test_size=TEST_SIZE, stratify=y_enc, random_state=RANDOM_STATE)
@@ -788,7 +805,7 @@ def main():
     plot_training_curves(history_mfcc_cnn, title_prefix="MFCC-image CNN")
 
     # LSTM su sequences MFCC
-    print("\n7) LSTM su sequenze MFCC (training)...")
+    print("\n5) LSTM su sequenze MFCC (training)...")
     N, seq_len, n_mfcc = X_seq.shape
     X_seq_flat = X_seq.reshape(N, seq_len * n_mfcc)
     scaler_seq = StandardScaler().fit(X_seq_flat)
@@ -807,7 +824,7 @@ def main():
     plot_training_curves(history_lstm, title_prefix="LSTM (MFCC seq)")
 
     # ROC AUC per RF (se possibile)
-    print("\n8) ROC AUC (one-vs-rest) for RF (if possible):")
+    print("\n6) ROC AUC (one-vs-rest) for RF (if possible):")
     try:
         y_tab_bin = label_binarize(y_tab_test, classes=np.arange(len(classes)))
         rf_auc = roc_auc_score(y_tab_bin, rf.predict_proba(X_tab_test), average='macro', multi_class='ovr')
@@ -816,7 +833,7 @@ def main():
         print("ROC AUC error:", e)
 
     # SHAP explanation (RF)
-    print("\n9) SHAP explanations (RF quick) — solo alcuni campioni:")
+    """print("\n9) SHAP explanations (RF quick) — solo alcuni campioni:")
     try:
         explainer_rf = shap.TreeExplainer(rf)
         Xrf_sample = X_tab_test[:50]
@@ -826,10 +843,10 @@ def main():
         except Exception as e:
             print("SHAP plotting skipped (env):", e)
     except Exception as e:
-        print("SHAP RF error:", e)
+        print("SHAP RF error:", e)"""
 
     # Grad-CAM example (mel CNN) - con colorbar in dB e assi
-    print("\n10) Grad-CAM example on mel-CNN:")
+    print("\n7) Grad-CAM example on mel-CNN:")
     last_conv = None
     for layer in reversed(cnn_model.layers):
         if isinstance(layer, layers.Conv2D):
@@ -852,7 +869,7 @@ def main():
         print("No Conv2D layer found for Grad-CAM.")
 
     # LIME explanation for LSTM via tabular wrapper
-    print("\n11) LIME explanation (tabular wrapper -> LSTM):")
+    print("\n8) LIME explanation (tabular wrapper -> LSTM):")
     try:
         predict_proba_lstm = make_lstm_predict_proba_wrapper(lstm_model, scaler_tab, seq_len=SEQ_LEN, n_mfcc=N_MFCC)
         explainer_lime = LimeTabularExplainer(training_data=X_tab_train, feature_names=feature_names,
@@ -869,14 +886,14 @@ def main():
         print("LIME error:", e)
 
     # t-SNE su MFCC mean vectors
-    print("\n12) t-SNE su vettori MFCC mean (esempio con max 1000 sample):")
+    print("\n9) t-SNE su vettori MFCC mean (esempio con max 1000 sample):")
     try:
         plot_tsne_on_mfcc_vectors(df_tab, n_samples=1000)
     except Exception as e:
         print("t-SNE error:", e)
 
     # Metriche riassuntive
-    print("\n13) Metriche riassuntive:")
+    print("\n10) Metriche riassuntive:")
     summary = {}
     for name, m in tab_models.items():
         proba = m.predict_proba(X_tab_test) if hasattr(m, "predict_proba") else None
@@ -888,39 +905,6 @@ def main():
     print(json.dumps(summary, indent=2, default=str))
 
     print("\nPipeline completata.")
-    print("Consigli: per sviluppo rapido riduci MAX_FILES o epoche; per training completo usa GPU.")
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
