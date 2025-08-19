@@ -744,7 +744,21 @@ def run_tabular_families(X_train, X_test, y_train, y_test, classes, feature_name
 
 from pathlib import Path
 
-DATASET_PATH_genre = Path(r"C:\Users\veryf\Desktop\GTZAN\genres_original")
+# Lista dei possibili percorsi
+possible_paths = [
+    Path(r"C:\Users\catal\OneDrive\Desktop\GTZAN\genres_original"),
+    Path(r"C:\Users\veryf\Desktop\GTZAN\genres_original")
+]
+
+# Trova il primo percorso che esiste
+DATASET_PATH_genre = next((p for p in possible_paths if p.exists()), None)
+
+if DATASET_PATH_genre is None:
+    raise FileNotFoundError("Nessuno dei percorsi specificati esiste.")
+else:
+    print(f"Dataset trovato in: {DATASET_PATH_genre}")
+
+
 
 def file_for_genre(genre, idx=1):
     """Restituisce il path completo di un file wav di un certo genere"""
