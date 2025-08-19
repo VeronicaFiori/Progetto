@@ -100,17 +100,22 @@ def extract_log_mel_spectrogram(file_path, n_mels=128, duration=30, sr=22050, ho
 """
 
 
-
 # -*- coding: utf-8 -*-
 """
-Pipeline completa GTZAN (unico script) - versione con Fuzzy feature extraction
+Pipeline completa GTZAN (unico script) – versione con PCA/LDA
 - MFCC aggregated (tabular) + MFCC sequences (LSTM)
 - Mel-spectrogram (CNN), MFCC-image (CNN)
 - RandomForest, SVM, LogisticRegression, KNN
 - LSTM (sequences)
-- Fuzzy C-Means + features fuzzificate (gauss/triang) + ensemble RF+Fuzzy
+- (Opzionale) Fuzzy C-Means + features fuzzificate (gauss/triang) + ensemble RF+Fuzzy
 - Grad-CAM robust + plotting mel dB con colorbar (salva PNG)
 - t-SNE su vettori MFCC mean
+- ***NOVITÀ***: integrazione PCA e LDA prima dei classificatori tabellari e LSTM
+
+NOTE IMPORTANTI:
+- PCA/LDA non sono applicati alle CNN (mel/MFCC-image) perché romperebbero la struttura spaziale; si mantengono invariate.
+- Per LSTM applichiamo PCA sui frame MFCC (per-feature), riducendo la dimensionalità per frame e rimodellando la sequenza.
+- Per i modelli tabulari vengono eseguite tre varianti: baseline (scaler), PCA, LDA (e opzionale PCA→LDA quando n_features >> n_samples).
 """
 # ----------------------------
 # Installazione pacchetti necessari (se mancanti)
@@ -148,9 +153,12 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import (classification_report, confusion_matrix, accuracy_score,
                              precision_score, recall_score, f1_score, roc_auc_score)
 from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
+from sklearn.pipeline import Pipeline
 
 import skfuzzy as fuzz
-from skfuzzy.cluster import cmeans
+#from skfuzzy.cluster import cmeans
 import skfuzzy.membership as fuzzmf
 
 import shap
@@ -163,8 +171,8 @@ from tensorflow.keras import layers, models, callbacks
 # CONFIGURAZIONE (modifica se necessario)
 # ----------------------------
 paths = [
-    r"C:\Users\catal\OneDrive\Desktop\GTZAN\genres_original",
-    r"C:\Users\veryf\Desktop\GTZAN\genres_original"
+    r"C:\\Users\\catal\\OneDrive\\Desktop\\GTZAN\\genres_original",
+    r"C:\\Users\\veryf\\Desktop\\GTZAN\\genres_original"
 ]
 
 DATASET_PATH = None
@@ -181,24 +189,41 @@ print(f"Percorso dataset selezionato: {DATASET_PATH}")
 SAMPLE_RATE = 22050
 N_MFCC = 40          # più info timbriche rispetto a 20
 SEQ_LEN = 260        # ≈ 6 sec invece di 3 → più contesto per LSTM
-TEST_SIZE = 0.2
+TEST_SIZE = 0.3
 RANDOM_STATE = 42
-CNN_EPOCHS = 40
-LSTM_EPOCHS = 40
+
+CNN_EPOCHS = 30
 CNN_BATCH = 32
+LSTM_EPOCHS = 30
 LSTM_BATCH = 32
+
 RF_N_ESTIMATORS = 150
 CMEANS_CLUSTERS = 10
 CMEANS_M = 2.0
 
 TSNE_PERPLEXITY = 30
 TSNE_N_ITER = 1000
+
 MFCC_IMG_SHAPE = (128, 128)
 MFCC_N_IMG = 40
-MFCC_CNN_EPOCHS = 40
+MFCC_CNN_EPOCHS = 30
 MFCC_CNN_BATCH = 32
 
 MAX_FILES = None  # imposta ad es. 200 per debug
+
+# ---- Nuove opzioni PCA/LDA ----
+# Per i modelli tabulari eseguiamo tutte le varianti: baseline, PCA e LDA.
+# Per PCA si può scegliere numero componenti o varianza spiegata.
+USE_PCA_VAR_EXPL = True             # se True usa soglia varianza spiegata, altrimenti n_componenti fisse
+PCA_VAR_EXPL = 0.95              # varianza cumulativa target per PCA tabulare
+PCA_N_COMPONENTS_TAB = 40        # usato solo se USE_PCA_VAR_EXPL=False
+
+# LDA: componenti massime = n_classi - 1 (calcolato a runtime)
+APPLY_PCA_BEFORE_LDA_WHEN_NF_GT_NS = True  # safety quando #feature >> #campioni
+PCA_FOR_LDA_VAR = 0.99                      # PCA preliminare prima di LDA (se attivata)
+
+# Per LSTM riduciamo la dimensionalità dei MFCC per frame con PCA
+PCA_SEQ_N_COMPONENTS = 24         # es. da 40 → 24 componenti per frame
 
 # ----------------------------
 # UTILITY: trova file audio
@@ -305,6 +330,7 @@ def make_mfcc_image(file_path, n_mfcc=MFCC_N_IMG, img_shape=MFCC_IMG_SHAPE, sr=S
 
 # ----------------------------
 # Fuzzificazione semplice (membership functions)
+# - genera membership per 'low','mid','high' per colonne scelte
 # ----------------------------
 def fuzzify_column(values, method='gauss', centers=None, widths=None):
     """
@@ -353,58 +379,57 @@ def fuzzify_dataframe_features(df_tab, cols_to_fuzzify=None, method='gauss'):
         df_out[f"{col}_high"] = mems['high']
     return df_out
 
+
 # ----------------------------
 # Costruisci dataset: tabular, seq, mel images, mfcc images
 # ----------------------------
+USE_ONLY_4_GENRES = False   # <-- metti True per usare solo classical/jazz/metal/pop
+
+SELECTED_GENRES = ["classical", "jazz", "metal", "pop"]
+
 def build_datasets(dataset_path, max_files=None, n_mfcc=N_MFCC, seq_len=SEQ_LEN):
     files = find_audio_files(dataset_path, max_files)
     if len(files) == 0:
         raise FileNotFoundError(f"Nessun .wav trovato in {dataset_path}")
+    
     rows, seqs, mel_imgs, mfcc_imgs, labels = [], [], [], [], []
     print(f"Found {len(files)} files — extracting features (this may take time)...")
+
     for fp in tqdm(files):
         try:
+            genre = os.path.basename(os.path.dirname(fp))
+            
+            # Selezione opzionale dei 4 generi
+            if USE_ONLY_4_GENRES and genre not in SELECTED_GENRES:
+                continue
+            
             agg, seq = extract_features_for_file(fp, n_mfcc=n_mfcc, seq_len=seq_len)
             mel = make_mel_image(fp)
             mfcc_img = make_mfcc_image(fp)
-            genre = os.path.basename(os.path.dirname(fp))
+
             agg["genre"] = genre
             agg["file"] = fp
+
             rows.append(agg)
             seqs.append(seq)
             mel_imgs.append(mel)
             mfcc_imgs.append(mfcc_img)
             labels.append(genre)
+
         except Exception as e:
             print("Skipping", fp, e)
+    
     df_tab = pd.DataFrame(rows)
-    # Fuzzificazione: aggiungiamo le colonne fuzzy
     df_tab_fuzzy = fuzzify_dataframe_features(df_tab)
+
     X_seq = np.array(seqs)       # (N, seq_len, n_mfcc)
     X_mel = np.array(mel_imgs)   # (N, H, W)
     X_mfcc_img = np.array(mfcc_imgs)
     y = np.array(labels)
-    # restituiamo anche df_tab_fuzzy per usare le colonne fuzzy
+
+    print(f"Final dataset size: {len(y)} samples — Genres: {np.unique(y)}")
     return df_tab_fuzzy, X_seq, X_mel, X_mfcc_img, y
 
-# ----------------------------
-# Modelli tabulari
-# ----------------------------
-def train_tabular_models(X_train, y_train):
-    models = {}
-    rf = RandomForestClassifier(n_estimators=RF_N_ESTIMATORS, random_state=RANDOM_STATE, n_jobs=-1)
-    rf.fit(X_train, y_train)
-    models['rf'] = rf
-    svm = SVC(probability=True, kernel='rbf', random_state=RANDOM_STATE)
-    svm.fit(X_train, y_train)
-    models['svm'] = svm
-    lr = LogisticRegression(max_iter=500, random_state=RANDOM_STATE)
-    lr.fit(X_train, y_train)
-    models['lr'] = lr
-    knn = KNeighborsClassifier(n_neighbors=5, n_jobs=-1)
-    knn.fit(X_train, y_train)
-    models['knn'] = knn
-    return models
 
 # ----------------------------
 # CNN & LSTM builders (stessi di prima)
@@ -438,68 +463,126 @@ def build_lstm(seq_len, n_mfcc, n_classes):
     model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
     return model
 
-# ----------------------------
-# Fuzzy C-means utilities (già presenti)
-# ----------------------------
-"""def train_fuzzy_cmeans(X_train, y_train, n_clusters=CMEANS_CLUSTERS, m=CMEANS_M):
-    data = X_train.T
-    cntr, u, u0, d, jm, p, fpc = cmeans(data, c=n_clusters, m=m, error=0.005, maxiter=1000, init=None)
-    unique_classes = np.unique(y_train)
-    n_clusters = cntr.shape[0]
-    n_classes = len(unique_classes)
-    P = np.zeros((n_clusters, n_classes))
-    for j in range(n_clusters):
-        for i_c, c in enumerate(unique_classes):
-            mask = (y_train == c)
-            P[j, i_c] = np.sum(u[j, mask])
-        s = np.sum(P[j])
-        if s > 0:
-            P[j] = P[j] / s
-    return cntr, u, P, unique_classes
 
-def cmeans_membership_from_centers(centers, X, m=CMEANS_M):
-    centers = np.asarray(centers)
-    X = np.asarray(X)
-    n_centers, n_features = centers.shape
-    n_samples = X.shape[0]
-    d = np.zeros((n_centers, n_samples))
-    for i in range(n_centers):
-        d[i] = np.linalg.norm(X - centers[i], axis=1)
-    power = 2.0/(m-1.0)
-    u = np.zeros((n_centers, n_samples))
-    for j in range(n_samples):
-        dj = d[:, j]
-        if np.any(dj == 0):
-            u[:, j] = 0.0
-            u[np.argmin(dj), j] = 1.0
+# ----------------------------
+# Metriche & plotting utilities
+# ----------------------------
+def compute_metrics(y_true, y_pred, y_proba=None, classes=None):
+    metrics = {}
+    metrics['accuracy'] = accuracy_score(y_true, y_pred)
+    metrics['precision_macro'] = precision_score(y_true, y_pred, average='macro', zero_division=0)
+    metrics['recall_macro'] = recall_score(y_true, y_pred, average='macro', zero_division=0)
+    metrics['f1_macro'] = f1_score(y_true, y_pred, average='macro', zero_division=0)
+    if y_proba is not None and classes is not None:
+        try:
+            y_true_bin = label_binarize(y_true, classes=np.arange(len(classes)))
+            metrics['roc_auc_ovr_macro'] = roc_auc_score(y_true_bin, y_proba, average='macro', multi_class='ovr')
+        except Exception:
+            metrics['roc_auc_ovr_macro'] = None
+    return metrics
+
+
+def plot_confusion(cm, classes, title="Confusion matrix"):
+    plt.figure(figsize=(9,7))
+    sns.heatmap(cm, annot=True, fmt='d', xticklabels=classes, yticklabels=classes, cmap='Blues')
+    plt.ylabel('True')
+    plt.xlabel('Pred')
+    plt.title(title)
+    plt.xticks(rotation=45)
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_training_curves(history, title_prefix="Model"):
+    if history is None:
+        print("No history provided")
+        return
+    h = history.history
+    def to_arr(key):
+        if key not in h:
+            return None
+        arr = np.array(h[key], dtype=float)
+        if arr.ndim > 1:
+            arr = arr.flatten()
+        return arr
+    loss = to_arr('loss'); val_loss = to_arr('val_loss')
+    acc_key = 'accuracy' if 'accuracy' in h else ('acc' if 'acc' in h else None)
+    acc = to_arr(acc_key) if acc_key else None
+    val_acc = to_arr('val_' + acc_key) if acc_key and ('val_' + acc_key) in h else None
+    if acc is not None and np.nanmax(acc) > 1.1:
+        acc = acc / 100.0
+    if val_acc is not None and np.nanmax(val_acc) > 1.1:
+        val_acc = val_acc / 100.0
+    epochs = range(1, (len(loss) if loss is not None else 0) + 1)
+    plt.figure(figsize=(12,4))
+    plt.subplot(1,2,1)
+    if loss is not None:
+        plt.plot(epochs, loss, marker='o', label='train loss')
+    if val_loss is not None:
+        plt.plot(epochs, val_loss, marker='o', label='val loss')
+    plt.title(f"{title_prefix} - Loss"); plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.legend(); plt.grid(alpha=0.2)
+    plt.subplot(1,2,2)
+    if acc is not None:
+        plt.plot(epochs, acc, marker='o', label='train acc')
+    if val_acc is not None:
+        plt.plot(epochs, val_acc, marker='o', label='val acc')
+    plt.title(f"{title_prefix} - Accuracy"); plt.xlabel('Epoch'); plt.ylabel('Accuracy'); plt.legend(); plt.grid(alpha=0.2)
+    plt.ylim(-0.02, 1.02)
+    plt.tight_layout(); plt.show()
+
+# ----------------------------
+# LIME wrapper per LSTM (usiamo features tabulari come interpretable)
+# ----------------------------
+
+def make_lstm_predict_proba_wrapper(lstm_model, scaler_tab, seq_len=SEQ_LEN, n_mfcc=N_MFCC):
+    def predict_proba_from_tab(X_tab):
+        X_tab_scaled = scaler_tab.transform(X_tab)
+        if X_tab.shape[1] >= n_mfcc:
+            mfcc_means = X_tab_scaled[:, :n_mfcc]
         else:
-            ratio = (dj.reshape((-1,1))/dj.reshape((1,-1)))**power
-            denom = np.sum(ratio, axis=1)
-            u[:, j] = 1.0/denom
-    return u
-
-def predict_fuzzy_from_clusters(centers, P_cluster_genre, X_test, m=CMEANS_M):
-    u_test = cmeans_membership_from_centers(centers, X_test, m=m)
-    n_clusters, n_samples = u_test.shape
-    _, n_genres = P_cluster_genre.shape
-    probs = np.zeros((n_samples, n_genres))
-    for s in range(n_samples):
-        probs[s] = np.dot(u_test[:, s], P_cluster_genre)
-    preds = np.argmax(probs, axis=1)
-    return preds, probs, u_test """
+            mfcc_means = np.zeros((X_tab.shape[0], n_mfcc))
+        seqs = np.repeat(mfcc_means[:, np.newaxis, :], seq_len, axis=1)
+        probs = lstm_model.predict(seqs, verbose=0)
+        return probs
+    return predict_proba_from_tab
 
 # ----------------------------
-# Grad-CAM robust + plotting (versione che salva png)
+# t-SNE su MFCC mean vectors
+# ----------------------------
+
+def plot_tsne_on_mfcc_vectors(df_tab, label_col="genre", n_samples=None, perplexity=TSNE_PERPLEXITY, n_iter=TSNE_N_ITER, random_state=RANDOM_STATE):
+    mfcc_mean_cols = [c for c in df_tab.columns if c.startswith("mfcc_") and c.endswith("_mean")]
+    X = df_tab[mfcc_mean_cols].values
+    y = df_tab[label_col].values
+    if n_samples is not None and n_samples < X.shape[0]:
+        idx = np.random.RandomState(random_state).choice(np.arange(X.shape[0]), size=n_samples, replace=False)
+        X = X[idx]; y = y[idx]
+    print("Running t-SNE on shape:", X.shape)
+    tsne = TSNE(n_components=2, perplexity=perplexity, n_iter=n_iter, random_state=random_state, init='pca')
+    X2 = tsne.fit_transform(X)
+    plt.figure(figsize=(10,8))
+    unique_labels = np.unique(y)
+    palette = sns.color_palette("tab10", n_colors=len(unique_labels))
+    for i, lab in enumerate(unique_labels):
+        mask = (y==lab)
+        plt.scatter(X2[mask,0], X2[mask,1], s=15, label=lab, color=palette[i])
+    plt.legend(bbox_to_anchor=(1.05,1), loc='upper left')
+    plt.title("t-SNE of MFCC mean vectors")
+    plt.xlabel("TSNE-1"); plt.ylabel("TSNE-2")
+    plt.tight_layout(); plt.show()
+
+# ----------------------------
+# Grad-CAM (come prima)
 # ----------------------------
 import matplotlib.gridspec as gridspec
-import matplotlib
-import os
 
 def get_last_conv_layer_name(model):
     for layer in reversed(model.layers):
         if isinstance(layer, tf.keras.layers.Conv2D):
             return layer.name
     return None
+
 
 def compute_gradcam_heatmap(model, img_input, last_conv_name=None, pred_index=None):
     img_input = np.asarray(img_input, dtype=np.float32)
@@ -523,8 +606,6 @@ def compute_gradcam_heatmap(model, img_input, last_conv_name=None, pred_index=No
         class_channel = predictions[:, pred_index]
 
     grads = tape.gradient(class_channel, conv_outputs)
-    if grads is None:
-        print("DEBUG: grads is None -> probabilmente grad tape non ha collegamenti (controlla modello)")
     pooled_grads = tf.reduce_mean(grads, axis=(0,1,2))
 
     conv_outputs = conv_outputs[0]
@@ -539,6 +620,7 @@ def compute_gradcam_heatmap(model, img_input, last_conv_name=None, pred_index=No
     heatmap = heatmap.numpy()
     return heatmap, int(pred_index)
 
+
 def plot_gradcam_overlay_for_file_v3(model, file_path, sample_img_for_model,
                                      sr=22050, n_mels=128, hop_length=512,
                                      last_conv_name=None, duration=30.0,
@@ -548,29 +630,22 @@ def plot_gradcam_overlay_for_file_v3(model, file_path, sample_img_for_model,
         img = img[..., np.newaxis]
     img_input = np.expand_dims(img, axis=0).astype(np.float32)
 
-    print("DEBUG: img_input.shape", img_input.shape, "dtype", img_input.dtype,
-          "min/max img:", img_input.min(), img_input.max())
-
     last_conv = last_conv_name or get_last_conv_layer_name(model)
-    print("DEBUG: last_conv_layer:", last_conv)
     if last_conv is None:
         raise RuntimeError("Nessun Conv2D trovato nel modello. Impossibile Grad-CAM.")
 
     heatmap, pred_idx = compute_gradcam_heatmap(model, img_input, last_conv_name=last_conv, pred_index=None)
-    print("DEBUG: pred_class_idx:", pred_idx, "heatmap shape:", heatmap.shape,
-          "min/max:", float(heatmap.min()), float(heatmap.max()))
 
     try:
         probs = model.predict(img_input, verbose=0)[0]
-        print("DEBUG: top preds (idx:prob):", sorted([(i, float(p)) for i,p in enumerate(probs)], key=lambda x:-x[1])[:5])
+        print("Top preds (idx:prob):", sorted([(i, float(p)) for i,p in enumerate(probs)], key=lambda x:-x[1])[:5])
     except Exception as e:
-        print("DEBUG: impossibile ottenere probs:", e)
+        print("Impossibile ottenere probs:", e)
 
     y_raw, sr = librosa.load(file_path, sr=sr, mono=True, duration=duration)
     S = librosa.feature.melspectrogram(y=y_raw, sr=sr, n_mels=n_mels, hop_length=hop_length, fmax=sr/2)
     S_db = librosa.power_to_db(S, ref=np.max)
     n_mels_calc, n_frames = S_db.shape
-    print("DEBUG: S_db.shape", S_db.shape)
     time_end = (n_frames * hop_length) / sr
     extent = [0, time_end, 0, sr/2]
 
@@ -614,111 +689,62 @@ def plot_gradcam_overlay_for_file_v3(model, file_path, sample_img_for_model,
     return heatmap, pred_idx, out_path
 
 # ----------------------------
-# Metriche & plotting utilities
+# Helper: esecuzione modelli tabulari con e senza PCA/LDA
 # ----------------------------
-def compute_metrics(y_true, y_pred, y_proba=None, classes=None):
-    metrics = {}
-    metrics['accuracy'] = accuracy_score(y_true, y_pred)
-    metrics['precision_macro'] = precision_score(y_true, y_pred, average='macro', zero_division=0)
-    metrics['recall_macro'] = recall_score(y_true, y_pred, average='macro', zero_division=0)
-    metrics['f1_macro'] = f1_score(y_true, y_pred, average='macro', zero_division=0)
-    if y_proba is not None and classes is not None:
-        try:
-            y_true_bin = label_binarize(y_true, classes=np.arange(len(classes)))
-            metrics['roc_auc_ovr_macro'] = roc_auc_score(y_true_bin, y_proba, average='macro', multi_class='ovr')
-        except Exception:
-            metrics['roc_auc_ovr_macro'] = None
-    return metrics
+def run_tabular_families(X_train, X_test, y_train, y_test, classes, feature_names):
+    results = {}
 
-def plot_confusion(cm, classes, title="Confusion matrix"):
-    plt.figure(figsize=(9,7))
-    sns.heatmap(cm, annot=True, fmt='d', xticklabels=classes, yticklabels=classes, cmap='Blues')
-    plt.ylabel('True')
-    plt.xlabel('Pred')
-    plt.title(title)
-    plt.xticks(rotation=45)
-    plt.yticks(rotation=0)
-    plt.tight_layout()
-    plt.show()
+    classifiers = {
+        'rf': RandomForestClassifier(n_estimators=RF_N_ESTIMATORS, random_state=RANDOM_STATE, n_jobs=-1),
+        'svm': SVC(probability=True, kernel='rbf', random_state=RANDOM_STATE),
+        'lr': LogisticRegression(max_iter=500, random_state=RANDOM_STATE),
+        'knn': KNeighborsClassifier(n_neighbors=5)
+    }
 
-def plot_training_curves(history, title_prefix="Model"):
-    if history is None:
-        print("No history provided")
-        return
-    h = history.history
-    def to_arr(key):
-        if key not in h:
-            return None
-        arr = np.array(h[key], dtype=float)
-        if arr.ndim > 1:
-            arr = arr.flatten()
-        return arr
-    loss = to_arr('loss'); val_loss = to_arr('val_loss')
-    acc_key = 'accuracy' if 'accuracy' in h else ('acc' if 'acc' in h else None)
-    acc = to_arr(acc_key) if acc_key else None
-    val_acc = to_arr('val_' + acc_key) if acc_key and ('val_' + acc_key) in h else None
-    if acc is not None and np.nanmax(acc) > 1.1:
-        acc = acc / 100.0
-    if val_acc is not None and np.nanmax(val_acc) > 1.1:
-        val_acc = val_acc / 100.0
-    epochs = range(1, (len(loss) if loss is not None else 0) + 1)
-    plt.figure(figsize=(12,4))
-    plt.subplot(1,2,1)
-    if loss is not None:
-        plt.plot(epochs, loss, marker='o', label='train loss')
-    if val_loss is not None:
-        plt.plot(epochs, val_loss, marker='o', label='val loss')
-    plt.title(f"{title_prefix} - Loss"); plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.legend(); plt.grid(alpha=0.2)
-    plt.subplot(1,2,2)
-    if acc is not None:
-        plt.plot(epochs, acc, marker='o', label='train acc')
-    if val_acc is not None:
-        plt.plot(epochs, val_acc, marker='o', label='val acc')
-    plt.title(f"{title_prefix} - Accuracy"); plt.xlabel('Epoch'); plt.ylabel('Accuracy'); plt.legend(); plt.grid(alpha=0.2)
-    plt.ylim(-0.02, 1.02)
-    plt.tight_layout(); plt.show()
+    # Funzione helper per training + metriche
+    def fit_and_evaluate(pipe, key):
+        pipe.fit(X_train, y_train)
+        y_pred = pipe.predict(X_test)
+        y_proba = pipe.predict_proba(X_test) if hasattr(pipe.named_steps['clf'], 'predict_proba') else None
+        results[key] = {
+            'model': pipe,
+            'metrics': compute_metrics(y_test, y_pred, y_proba=y_proba, classes=classes),
+            'y_pred': y_pred,
+            'y_proba': y_proba
+        }
+
+    # ----------------- Baseline -----------------
+    for name, clf in classifiers.items():
+        pipe = Pipeline([('scaler', StandardScaler()), ('clf', clf)])
+        fit_and_evaluate(pipe, f'{name}_baseline')
+
+    # ----------------- PCA -----------------
+    pca_n = PCA_VAR_EXPL if USE_PCA_VAR_EXPL else PCA_N_COMPONENTS_TAB
+    for name, clf in classifiers.items():
+        pipe = Pipeline([
+            ('scaler', StandardScaler()),
+            ('pca', PCA(n_components=pca_n, svd_solver='full', random_state=RANDOM_STATE)),
+            ('clf', clf)
+        ])
+        fit_and_evaluate(pipe, f'{name}_pca')
+
+    # ----------------- LDA -----------------
+    n_features, n_samples = X_train.shape[1], X_train.shape[0]
+    lda_components = len(classes) - 1
+    preproc = [('scaler', StandardScaler())]
+    if APPLY_PCA_BEFORE_LDA_WHEN_NF_GT_NS and (n_features > n_samples):
+        preproc.append(('pca', PCA(n_components=PCA_FOR_LDA_VAR, svd_solver='full', random_state=RANDOM_STATE)))
+    preproc.append(('lda', LDA(n_components=lda_components)))
+
+    for name, clf in classifiers.items():
+        pipe = Pipeline(preproc + [('clf', clf)])
+        fit_and_evaluate(pipe, f'{name}_lda')
+
+    return results
+
 
 # ----------------------------
-# LIME wrapper for LSTM (usiamo features tabulari come interpretable)
-# ----------------------------
-def make_lstm_predict_proba_wrapper(lstm_model, scaler_tab, seq_len=SEQ_LEN, n_mfcc=N_MFCC):
-    def predict_proba_from_tab(X_tab):
-        X_tab_scaled = scaler_tab.transform(X_tab)
-        if X_tab.shape[1] >= n_mfcc:
-            mfcc_means = X_tab_scaled[:, :n_mfcc]
-        else:
-            mfcc_means = np.zeros((X_tab.shape[0], n_mfcc))
-        seqs = np.repeat(mfcc_means[:, np.newaxis, :], seq_len, axis=1)
-        probs = lstm_model.predict(seqs, verbose=0)
-        return probs
-    return predict_proba_from_tab
-
-# ----------------------------
-# t-SNE su MFCC mean vectors
-# ----------------------------
-def plot_tsne_on_mfcc_vectors(df_tab, label_col="genre", n_samples=None, perplexity=TSNE_PERPLEXITY, n_iter=TSNE_N_ITER, random_state=RANDOM_STATE):
-    mfcc_mean_cols = [c for c in df_tab.columns if c.startswith("mfcc_") and c.endswith("_mean")]
-    X = df_tab[mfcc_mean_cols].values
-    y = df_tab[label_col].values
-    if n_samples is not None and n_samples < X.shape[0]:
-        idx = np.random.RandomState(random_state).choice(np.arange(X.shape[0]), size=n_samples, replace=False)
-        X = X[idx]; y = y[idx]
-    print("Running t-SNE on shape:", X.shape)
-    tsne = TSNE(n_components=2, perplexity=perplexity, n_iter=n_iter, random_state=random_state, init='pca')
-    X2 = tsne.fit_transform(X)
-    plt.figure(figsize=(10,8))
-    unique_labels = np.unique(y)
-    palette = sns.color_palette("tab10", n_colors=len(unique_labels))
-    for i, lab in enumerate(unique_labels):
-        mask = (y==lab)
-        plt.scatter(X2[mask,0], X2[mask,1], s=15, label=lab, color=palette[i])
-    plt.legend(bbox_to_anchor=(1.05,1), loc='upper left')
-    plt.title("t-SNE of MFCC mean vectors")
-    plt.xlabel("TSNE-1"); plt.ylabel("TSNE-2")
-    plt.tight_layout(); plt.show()
-
-# ----------------------------
-# Funzione principale
+# MAIN
 # ----------------------------
 def main():
     print("1) Costruzione dataset (estrazione MFCC, mel, MFCC-image, fuzzy features)...")
@@ -727,48 +753,26 @@ def main():
     le = LabelEncoder(); y_enc = le.fit_transform(y); classes = le.classes_
     print("Generi:", list(classes))
 
-    # Tabular prep - includiamo anche le colonne fuzzificate
+    # Tabular prep (includiamo fuzzy)
     X_tab_df = df_tab.drop(columns=["genre","file"]).copy()
-    # Ordine colonne (usiamo tutte le originali e le fuzzy aggiunte)
     feature_names = X_tab_df.columns.tolist()
     X_tab = X_tab_df.values
-    scaler_tab = StandardScaler().fit(X_tab)
-    X_tab_s = scaler_tab.transform(X_tab)
-    X_tab_train, X_tab_test, y_tab_train, y_tab_test, idx_train, idx_test = train_test_split(
-        X_tab_s, y_enc, np.arange(len(X_tab_s)), test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y_enc)
 
-    print("\n2) Training modelli tabulari (RF,SVM,LR,KNN)...")
-    tab_models = train_tabular_models(X_tab_train, y_tab_train)
-    for name, m in tab_models.items():
-        y_pred = m.predict(X_tab_test)
-        y_proba = m.predict_proba(X_tab_test) if hasattr(m, "predict_proba") else None
-        print(f"\n-- {name.upper()} --")
-        print("Accuracy:", accuracy_score(y_tab_test, y_pred))
-        print(classification_report(y_tab_test, y_pred, target_names=classes, zero_division=0))
-        plot_confusion(confusion_matrix(y_tab_test, y_pred), classes, title=f"{name.upper()} Confusion Matrix")
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_tab, y_enc, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y_enc)
 
-   # Fuzzy C-means on tabular scaled features
-    """print("\n3) Fuzzy C-Means (tabular scaled features)...")
-    centers, u_train, P_cluster_genre, unique_classes = train_fuzzy_cmeans(X_tab_train, y_tab_train)
-    fuzzy_preds_test, fuzzy_probs_test, u_test = predict_fuzzy_from_clusters(centers, P_cluster_genre, X_tab_test)
-    print("Fuzzy accuracy:", accuracy_score(y_tab_test, fuzzy_preds_test))
-    print(classification_report(y_tab_test, fuzzy_preds_test, target_names=classes, zero_division=0))
-    plot_confusion(confusion_matrix(y_tab_test, fuzzy_preds_test), classes, title="Fuzzy Confusion")""" 
-    
-    
-
-    # Ensemble RF + Fuzzy (su tabular)
-    """print("\n4) Ensemble RF + Fuzzy (tabular):")
-    rf = tab_models['rf']
-    rf_proba_test = rf.predict_proba(X_tab_test)
-    ensemble_probs = 0.6 * rf_proba_test + 0.4 * fuzzy_probs_test
-    ensemble_pred = np.argmax(ensemble_probs, axis=1)
-    print("Ensemble accuracy:", accuracy_score(y_tab_test, ensemble_pred))
-    print(classification_report(y_tab_test, ensemble_pred, target_names=classes, zero_division=0))
-    plot_confusion(confusion_matrix(y_tab_test, ensemble_pred), classes, title="Ensemble RF+Fuzzy Confusion")"""
+    print("\n2) Training modelli tabulari: baseline, PCA e LDA...")
+    tab_results = run_tabular_families(X_train, X_test, y_train, y_test, classes, feature_names)
+    for key, res in tab_results.items():
+        print(f"\n-- {key.upper()} --")
+        print("Metrics:", json.dumps(res['metrics'], indent=2))
+        y_pred = res['y_pred']
+        print(classification_report(y_test, y_pred, target_names=classes, zero_division=0))
+        cm = confusion_matrix(y_test, y_pred)
+        plot_confusion(cm, classes, title=f"{key.upper()} Confusion Matrix")
 
     # CNN su mel-spectrogram
-    print("\n3) CNN su mel-spectrogram (training)...")
+    print("\n3) CNN su mel-spectrogram (training – invariata, senza PCA/LDA)...")
     X_mel_norm = (X_mel - X_mel.min()) / (X_mel.max() - X_mel.min() + 1e-9)
     X_mel_norm = X_mel_norm[..., np.newaxis]
     files_all = df_tab['file'].values
@@ -787,8 +791,8 @@ def main():
     plot_confusion(confusion_matrix(y_mel_test, cnn_pred), classes, title="CNN (mel) Confusion")
     plot_training_curves(history_cnn_mel, title_prefix="Mel-spectrogram CNN")
 
-    # CNN su MFCC-image
-    print("\n4) CNN su MFCC-image (training)...")
+    # CNN su MFCC-image (invariata)
+    print("\n4) CNN su MFCC-image (training – invariata, senza PCA/LDA)...")
     X_mfcc_img_norm = (X_mfcc_img - X_mfcc_img.min()) / (X_mfcc_img.max() - X_mfcc_img.min() + 1e-9)
     X_mfcc_img_norm = X_mfcc_img_norm[..., np.newaxis]
     X_mfcc_tr, X_mfcc_te, y_mfcc_tr, y_mfcc_te = train_test_split(X_mfcc_img_norm, y_enc, test_size=TEST_SIZE, stratify=y_enc, random_state=RANDOM_STATE)
@@ -803,48 +807,73 @@ def main():
     plot_confusion(confusion_matrix(y_mfcc_te, mfcc_pred), classes, title="MFCC-CNN Confusion")
     plot_training_curves(history_mfcc_cnn, title_prefix="MFCC-image CNN")
 
-    # LSTM su sequences MFCC
-    print("\n5) LSTM su sequenze MFCC (training)...")
+
+    # LSTM su sequenze MFCC
+    print("\n5a) LSTM su sequenze MFCC (senza PCA)...")
     N, seq_len, n_mfcc = X_seq.shape
+    X_seq_train, X_seq_test, y_seq_train, y_seq_test = train_test_split(
+        X_seq, y_enc, test_size=TEST_SIZE, stratify=y_enc, random_state=RANDOM_STATE)
+
+    lstm_model_no_pca = build_lstm(seq_len, n_mfcc, n_classes=len(classes))
+    es_lstm_no_pca = callbacks.EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
+    history_lstm_no_pca = lstm_model_no_pca.fit(X_seq_train, y_seq_train,
+                                                validation_data=(X_seq_test, y_seq_test),
+                                                epochs=LSTM_EPOCHS, batch_size=LSTM_BATCH,
+                                                callbacks=[es_lstm_no_pca], verbose=2)
+    lstm_proba_no_pca = lstm_model_no_pca.predict(X_seq_test)
+    lstm_pred_no_pca = np.argmax(lstm_proba_no_pca, axis=1)
+    print("LSTM (senza PCA) accuracy:", accuracy_score(y_seq_test, lstm_pred_no_pca))
+    print(classification_report(y_seq_test, lstm_pred_no_pca, target_names=classes, zero_division=0))
+    plot_confusion(confusion_matrix(y_seq_test, lstm_pred_no_pca), classes, title="LSTM (senza PCA) Confusion")
+    plot_training_curves(history_lstm_no_pca, title_prefix="LSTM (MFCC seq senza PCA)")
+
+    print("\n5b) LSTM su sequenze MFCC con PCA per frame...")
     X_seq_flat = X_seq.reshape(N, seq_len * n_mfcc)
-    scaler_seq = StandardScaler().fit(X_seq_flat)
-    X_seq_flat_s = scaler_seq.transform(X_seq_flat)
+    scaler_seq_global = StandardScaler().fit(X_seq_flat)
+    X_seq_flat_s = scaler_seq_global.transform(X_seq_flat)
     X_seq_s = X_seq_flat_s.reshape(N, seq_len, n_mfcc)
-    X_seq_train, X_seq_test, y_seq_train, y_seq_test = train_test_split(X_seq_s, y_enc, test_size=TEST_SIZE, stratify=y_enc, random_state=RANDOM_STATE)
-    lstm_model = build_lstm(seq_len, n_mfcc, n_classes=len(classes))
-    es3 = callbacks.EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
-    history_lstm = lstm_model.fit(X_seq_train, y_seq_train, validation_data=(X_seq_test, y_seq_test),
-                                 epochs=LSTM_EPOCHS, batch_size=LSTM_BATCH, callbacks=[es3], verbose=2)
-    lstm_proba = lstm_model.predict(X_seq_test)
-    lstm_pred = np.argmax(lstm_proba, axis=1)
-    print("LSTM accuracy:", accuracy_score(y_seq_test, lstm_pred))
-    print(classification_report(y_seq_test, lstm_pred, target_names=classes, zero_division=0))
-    plot_confusion(confusion_matrix(y_seq_test, lstm_pred), classes, title="LSTM Confusion")
-    plot_training_curves(history_lstm, title_prefix="LSTM (MFCC seq)")
 
-    # ROC AUC per RF (se possibile)
-    print("\n6) ROC AUC (one-vs-rest) for RF (if possible):")
-    try:
-        y_tab_bin = label_binarize(y_tab_test, classes=np.arange(len(classes)))
-        rf_auc = roc_auc_score(y_tab_bin, rf.predict_proba(X_tab_test), average='macro', multi_class='ovr')
-        print("RF ROC AUC (ovr macro):", rf_auc)
-    except Exception as e:
-        print("ROC AUC error:", e)
+    X_seq_train, X_seq_test, y_seq_train, y_seq_test = train_test_split(
+        X_seq_s, y_enc, test_size=TEST_SIZE, stratify=y_enc, random_state=RANDOM_STATE)
 
-    # SHAP explanation (RF)
-    """print("\n9) SHAP explanations (RF quick) — solo alcuni campioni:")
-    try:
-        explainer_rf = shap.TreeExplainer(rf)
-        Xrf_sample = X_tab_test[:50]
-        shap_values = explainer_rf.shap_values(Xrf_sample)
+    X_frames_train = X_seq_train.reshape(-1, n_mfcc)
+    pca_seq = PCA(n_components=PCA_SEQ_N_COMPONENTS, svd_solver='full', random_state=RANDOM_STATE)
+    pca_seq.fit(X_frames_train)
+
+    X_seq_train_red = pca_seq.transform(X_seq_train.reshape(-1, n_mfcc)).reshape(X_seq_train.shape[0], seq_len, PCA_SEQ_N_COMPONENTS)
+    X_seq_test_red  = pca_seq.transform(X_seq_test.reshape(-1, n_mfcc)).reshape(X_seq_test.shape[0],  seq_len, PCA_SEQ_N_COMPONENTS)
+
+    lstm_model_pca = build_lstm(seq_len, PCA_SEQ_N_COMPONENTS, n_classes=len(classes))
+    es_lstm_pca = callbacks.EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
+    history_lstm_pca = lstm_model_pca.fit(X_seq_train_red, y_seq_train,
+                                          validation_data=(X_seq_test_red, y_seq_test),
+                                          epochs=LSTM_EPOCHS, batch_size=LSTM_BATCH,
+                                          callbacks=[es_lstm_pca], verbose=2)
+    lstm_proba_pca = lstm_model_pca.predict(X_seq_test_red)
+    lstm_pred_pca = np.argmax(lstm_proba_pca, axis=1)
+    print("LSTM (con PCA) accuracy:", accuracy_score(y_seq_test, lstm_pred_pca))
+    print(classification_report(y_seq_test, lstm_pred_pca, target_names=classes, zero_division=0))
+    plot_confusion(confusion_matrix(y_seq_test, lstm_pred_pca), classes, title="LSTM (PCA sui frame) Confusion")
+    plot_training_curves(history_lstm_pca, title_prefix="LSTM (MFCC seq + PCA)")
+
+
+    # ROC AUC per RF migliore tra le tre varianti (se disponibile proba)
+    print("\n6) ROC AUC (one-vs-rest) per il migliore RF tra baseline/PCA/LDA:")
+    rf_keys = [k for k in tab_results.keys() if k.startswith('rf_')]
+    best_key = None; best_acc = -1.0
+    for k in rf_keys:
+        acc = tab_results[k]['metrics']['accuracy']
+        if acc is not None and acc > best_acc:
+            best_acc = acc; best_key = k
+    if best_key is not None and tab_results[best_key]['y_proba'] is not None:
         try:
-            shap.summary_plot(shap_values, features=Xrf_sample, feature_names=feature_names)
+            y_bin = label_binarize(y_test, classes=np.arange(len(classes)))
+            rf_auc = roc_auc_score(y_bin, tab_results[best_key]['y_proba'], average='macro', multi_class='ovr')
+            print(f"RF ({best_key}) ROC AUC (ovr macro):", rf_auc)
         except Exception as e:
-            print("SHAP plotting skipped (env):", e)
-    except Exception as e:
-        print("SHAP RF error:", e)"""
+            print("ROC AUC error:", e)
 
-    # Grad-CAM example (mel CNN) - con colorbar in dB e assi
+    # Grad-CAM example (mel CNN)
     print("\n7) Grad-CAM example on mel-CNN:")
     last_conv = None
     for layer in reversed(cnn_model.layers):
@@ -858,7 +887,6 @@ def main():
         sample_img_for_model = X_mel_test[sample_idx][..., 0]
         heatmap, pred, out_path = plot_gradcam_overlay_for_file_v3(cnn_model, sample_file, sample_img_for_model,
                                                                    sr=SAMPLE_RATE, n_mels=128, hop_length=512, duration=30.0)
-        # opzionale: apri il file appena salvato su Windows
         try:
             if os.name == 'nt':
                 os.startfile(out_path)
@@ -867,22 +895,30 @@ def main():
     else:
         print("No Conv2D layer found for Grad-CAM.")
 
-    # LIME explanation for LSTM via tabular wrapper
-    print("\n8) LIME explanation (tabular wrapper -> LSTM):")
-    try:
-        predict_proba_lstm = make_lstm_predict_proba_wrapper(lstm_model, scaler_tab, seq_len=SEQ_LEN, n_mfcc=N_MFCC)
-        explainer_lime = LimeTabularExplainer(training_data=X_tab_train, feature_names=feature_names,
+    # LIME example (usiamo il miglior modello tabulare per coerenza)
+    print("\n8) LIME explanation sul miglior modello tabulare (per accuracy):")
+    best_key = None; best_acc = -1.0
+    for k, res in tab_results.items():
+        acc = res['metrics']['accuracy']
+        if acc > best_acc:
+            best_acc = acc; best_key = k
+    if best_key is not None:
+        best_model = tab_results[best_key]['model']
+        # Per Lime usiamo lo spazio *pre-clf* della pipeline (input originale)
+        explainer_lime = LimeTabularExplainer(training_data=X_train, feature_names=feature_names,
                                               class_names=list(classes), mode='classification')
-        i = 0
-        exp = explainer_lime.explain_instance(X_tab_test[i], predict_proba_lstm, num_features=10)
-        print("LIME explanation for sample", i, "->", exp.as_list())
         try:
-            fig = exp.as_pyplot_figure()
-            plt.show()
-        except Exception:
-            pass
-    except Exception as e:
-        print("LIME error:", e)
+            def predict_proba_lime(X):
+                return best_model.predict_proba(X)
+            i = 0
+            exp = explainer_lime.explain_instance(X_test[i], predict_proba_lime, num_features=10)
+            print("LIME explanation for sample", i, "->", exp.as_list())
+            try:
+                fig = exp.as_pyplot_figure(); plt.show()
+            except Exception:
+                pass
+        except Exception as e:
+            print("LIME error:", e)
 
     # t-SNE su MFCC mean vectors
     print("\n9) t-SNE su vettori MFCC mean (esempio con max 1000 sample):")
@@ -892,15 +928,13 @@ def main():
         print("t-SNE error:", e)
 
     # Metriche riassuntive
-    print("\n10) Metriche riassuntive:")
+    print("\n10) Metriche riassuntive (tabular baseline/PCA/LDA, CNN, LSTM):")
     summary = {}
-    for name, m in tab_models.items():
-        proba = m.predict_proba(X_tab_test) if hasattr(m, "predict_proba") else None
-        pred = m.predict(X_tab_test)
-        summary[name] = compute_metrics(y_tab_test, pred, y_proba=proba, classes=classes)
+    for key, res in tab_results.items():
+        summary[key] = res['metrics']
     summary['cnn_mel'] = compute_metrics(y_mel_test, cnn_pred, y_proba=cnn_proba, classes=classes)
     summary['cnn_mfcc'] = compute_metrics(y_mfcc_te, mfcc_pred, y_proba=mfcc_proba, classes=classes)
-    summary['lstm'] = compute_metrics(y_seq_test, lstm_pred, y_proba=lstm_proba, classes=classes)
+    summary['lstm_pca_seq'] = compute_metrics(y_seq_test, lstm_pred_pca, y_proba=lstm_proba_pca, classes=classes)
     print(json.dumps(summary, indent=2, default=str))
 
     print("\nPipeline completata.")
