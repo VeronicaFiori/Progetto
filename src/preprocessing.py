@@ -742,11 +742,66 @@ def run_tabular_families(X_train, X_test, y_train, y_test, classes, feature_name
 
     return results
 
+from pathlib import Path
+
+DATASET_PATH_genre = Path(r"C:\Users\veryf\Desktop\GTZAN\genres_original")
+
+def file_for_genre(genre, idx=1):
+    """Restituisce il path completo di un file wav di un certo genere"""
+    fname = f"{genre}.{idx:05d}.wav"   # es. jazz.00001.wav
+    return DATASET_PATH_genre / genre / fname
+
+def plot_time_and_freq(files):
+    n = len(files)
+    fig, axs = plt.subplots(n, 2, figsize=(12, 3.2*n), squeeze=False)
+
+    for i, (genre, filepath) in enumerate(files.items()):
+        # --- Caricamento audio ---
+        y, sr = librosa.load(filepath, sr=22050)
+
+        # --- Dominio del tempo ---
+        librosa.display.waveshow(y, sr=sr, ax=axs[i, 0])
+        axs[i, 0].set_title(f"{genre} — dominio del tempo")
+        axs[i, 0].set_xlabel("Tempo (s)")
+        axs[i, 0].set_ylabel("Ampiezza")
+        axs[i, 0].set_ylim(-1, 1)          # fisso da -1 a 1
+        axs[i, 0].set_yticks([-1, 0, 1])   # solo questi tre valori
+
+        # --- Dominio della frequenza ---
+        N = len(y)
+        spectrum = np.fft.rfft(y)
+        freq = np.fft.rfftfreq(N, d=1/sr)
+        amp = np.abs(spectrum)
+
+        # Normalizzazione a [-1,1] per rispettare lo stesso asse
+        amp_norm = amp / (amp.max() + 1e-12)
+        amp_m1_1 = amp_norm * 2.0 - 1.0
+
+        axs[i, 1].plot(freq, amp_m1_1, linewidth=0.8)
+        axs[i, 1].set_title(f"{genre} — spettro in frequenza (normalizzato)")
+        axs[i, 1].set_xlabel("Frequenza (Hz)")
+        axs[i, 1].set_ylabel("Ampiezza (norm.)")
+        axs[i, 1].set_ylim(-1, 1)
+        axs[i, 1].set_yticks([-1, 0, 1])
+
+    plt.tight_layout()
+    plt.show()
+
 
 # ----------------------------
 # MAIN
 # ----------------------------
 def main():
+    # scegli 1 file per genere
+    files = {
+        "jazz":  file_for_genre("jazz", 1),
+        "rock":  file_for_genre("rock", 1),
+        "metal": file_for_genre("metal", 1),
+    }
+
+    # fai il plot tempo + frequenza
+    plot_time_and_freq(files)
+
     print("1) Costruzione dataset (estrazione MFCC, mel, MFCC-image, fuzzy features)...")
     df_tab, X_seq, X_mel, X_mfcc_img, y = build_datasets(DATASET_PATH, max_files=MAX_FILES)
     print("Shapes:", df_tab.shape, X_seq.shape, X_mel.shape, X_mfcc_img.shape)
