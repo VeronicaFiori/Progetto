@@ -575,7 +575,14 @@ def plot_tsne_on_mfcc_vectors(df_tab, label_col="genre", n_samples=None, perplex
 # ----------------------------
 # Grad-CAM (come prima)
 # ----------------------------
+import os
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+import matplotlib.cm as cm
+import librosa
+import tensorflow as tf
 
 def get_last_conv_layer_name(model):
     for layer in reversed(model.layers):
@@ -583,8 +590,11 @@ def get_last_conv_layer_name(model):
             return layer.name
     return None
 
-
 def compute_gradcam_heatmap(model, img_input, last_conv_name=None, pred_index=None):
+    """
+    img_input: numpy array shape (1, H, W, C), dtype float32
+    restituisce heatmap normalizzata (H', W') e pred_index
+    """
     img_input = np.asarray(img_input, dtype=np.float32)
     if img_input.ndim != 4 or img_input.shape[0] != 1:
         raise ValueError("img_input must be shape (1,H,W,C)")
@@ -592,56 +602,84 @@ def compute_gradcam_heatmap(model, img_input, last_conv_name=None, pred_index=No
     if last_conv_name is None:
         last_conv_name = get_last_conv_layer_name(model)
         if last_conv_name is None:
-            raise ValueError("Nessun layer Conv2D trovato nel modello")
+            raise ValueError("No Conv2D layer found in model")
 
-    grad_model = tf.keras.models.Model(inputs=model.inputs,
-                                       outputs=[model.get_layer(last_conv_name).output, model.output])
+    # modello che restituisce output del conv layer e output finale
+    grad_model = tf.keras.models.Model(
+        inputs=model.inputs,
+        outputs=[model.get_layer(last_conv_name).output, model.output]
+    )
 
     img_tensor = tf.convert_to_tensor(img_input, dtype=tf.float32)
 
     with tf.GradientTape() as tape:
+        # forward pass
         conv_outputs, predictions = grad_model(img_tensor)
+        # se pred_index non è dato, prendi l'argmax delle predizioni
         if pred_index is None:
-            pred_index = tf.argmax(predictions[0]).numpy()
+            pred_index = int(tf.argmax(predictions[0]).numpy())
         class_channel = predictions[:, pred_index]
 
+    # Assicuriamoci che tape osservi conv_outputs per il calcolo dei gradienti
+    tape.watch(conv_outputs)
     grads = tape.gradient(class_channel, conv_outputs)
+    if grads is None:
+        # gradiente nullo: niente segnale
+        H, W, K = conv_outputs.shape[1], conv_outputs.shape[2], conv_outputs.shape[3]
+        return np.zeros((H, W), dtype=np.float32), pred_index
+
+    # global average pooling sui gradienti (come in Grad-CAM)
     pooled_grads = tf.reduce_mean(grads, axis=(0,1,2))
 
-    conv_outputs = conv_outputs[0]
+    conv_outputs = conv_outputs[0]  # rimuove la dimensione batch
+    # pesiamo ogni feature map per il suo gradiente medio
     weighted = conv_outputs * pooled_grads[tf.newaxis, tf.newaxis, :]
     heatmap = tf.reduce_sum(weighted, axis=-1)
+
+    # ReLU e normalizzazione
     heatmap = tf.maximum(heatmap, 0)
     max_val = tf.reduce_max(heatmap)
-    if max_val == 0:
+    if max_val.numpy() <= 1e-8:
+        # nessun segnale significativo
         heatmap = tf.zeros_like(heatmap)
     else:
         heatmap = heatmap / (max_val + 1e-9)
-    heatmap = heatmap.numpy()
-    return heatmap, int(pred_index)
+
+    return heatmap.numpy(), pred_index
 
 
 def plot_gradcam_overlay_for_file_v3(model, file_path, sample_img_for_model,
                                      sr=22050, n_mels=128, hop_length=512,
                                      last_conv_name=None, duration=30.0,
                                      cmap='magma', out_dir=None):
+    """
+    sample_img_for_model: array (H,W,C) o (H,W) -- se (H,W) verrà aggiunto canale
+    restituisce heatmap (float array), pred_idx, out_path
+    """
+    # Assicuriamoci che l'input abbia canale e batch dim
     img = np.array(sample_img_for_model)
     if img.ndim == 2:
         img = img[..., np.newaxis]
-    img_input = np.expand_dims(img, axis=0).astype(np.float32)
+    if img.ndim == 3:
+        img_input = np.expand_dims(img, axis=0).astype(np.float32)
+    else:
+        raise ValueError("sample_img_for_model must be 2D or 3D (H,W[,C])")
 
     last_conv = last_conv_name or get_last_conv_layer_name(model)
     if last_conv is None:
-        raise RuntimeError("Nessun Conv2D trovato nel modello. Impossibile Grad-CAM.")
+        raise RuntimeError("No Conv2D found in model. Can't compute Grad-CAM.")
 
+    # compute heatmap
     heatmap, pred_idx = compute_gradcam_heatmap(model, img_input, last_conv_name=last_conv, pred_index=None)
 
+    # stampiamo le top predictions per controllo
     try:
         probs = model.predict(img_input, verbose=0)[0]
         print("Top preds (idx:prob):", sorted([(i, float(p)) for i,p in enumerate(probs)], key=lambda x:-x[1])[:5])
     except Exception as e:
-        print("Impossibile ottenere probs:", e)
+        print("Could not obtain probs:", e)
 
+    # carichiamo l'audio e ricreiamo lo spettrogramma per avere le dimensioni esatte
     y_raw, sr = librosa.load(file_path, sr=sr, mono=True, duration=duration)
     S = librosa.feature.melspectrogram(y=y_raw, sr=sr, n_mels=n_mels, hop_length=hop_length, fmax=sr/2)
     S_db = librosa.power_to_db(S, ref=np.max)
@@ -649,26 +687,46 @@ def plot_gradcam_overlay_for_file_v3(model, file_path, sample_img_for_model,
     time_end = (n_frames * hop_length) / sr
     extent = [0, time_end, 0, sr/2]
 
+    # heatmap -> ridimensiona a (n_mels, n_frames)
+    # cv2.resize expects (width, height) as dsize, returns array shape (height, width)
     heat_resized = cv2.resize(heatmap, (n_frames, n_mels_calc), interpolation=cv2.INTER_CUBIC)
+    # heat_resized ora ha shape (n_mels_calc, n_frames) se tutto ok
+    # Normalizziamo in [0,1]
+    if np.nanmax(heat_resized) > 0:
+        heat_resized = heat_resized - np.nanmin(heat_resized)
+        heat_resized = heat_resized / (np.nanmax(heat_resized) + 1e-9)
+    else:
+        print("[Warning] Grad-CAM heatmap appears empty (all zeros). Saving figure without overlay.")
 
+    # costruiamo una mappa RGBA dalla heatmap usando una colormap (jet)
+    colored_heat = cm.get_cmap('jet')(heat_resized)  # shape (H, W, 4), valori in [0,1]
+    # impostiamo alpha in base al valore della heatmap (es. 0..0.6)
+    alpha_mask = np.clip(heat_resized, 0, 1) * 0.6
+    colored_heat[..., 3] = alpha_mask
+
+    # plot
     fig = plt.figure(figsize=(14,6))
     gs = gridspec.GridSpec(1, 3, width_ratios=[1.0, 1.0, 0.06], wspace=0.25)
     ax0 = fig.add_subplot(gs[0])
     ax1 = fig.add_subplot(gs[1])
     cax = fig.add_subplot(gs[2])
 
+    # spettrogramma sinistro (solo mel)
     im0 = ax0.imshow(S_db, origin='lower', aspect='auto', extent=extent, cmap=cmap)
     ax0.set_title(f"Mel-spectrogram (dB)\n{os.path.basename(file_path)}")
     ax0.set_xlabel("Tempo (s)")
     ax0.set_ylabel("Frequenza (Hz)")
 
+    # spettrogramma destro + overlay grad-cam colorato
     im1 = ax1.imshow(S_db, origin='lower', aspect='auto', extent=extent, cmap=cmap)
-    ax1.imshow(heat_resized, cmap='jet', alpha=0.5, origin='lower', extent=extent)
+    # overlay RGBA: dobbiamo passare extent e origin per allineare
+    ax1.imshow(colored_heat, origin='lower', aspect='auto', extent=extent, interpolation='bilinear')
     ax1.set_title(f"Grad-CAM overlay (pred class idx={pred_idx})")
     ax1.set_xlabel("Tempo (s)")
     ax1.set_ylabel("Frequenza (Hz)")
 
-    cbar = fig.colorbar(im1, cax=cax, format='%+2.0f dB')
+    # colorbar relativa al mel-spectrogram (dB)
+    cbar = fig.colorbar(im0, cax=cax, format='%+2.0f dB')
     cbar.set_label('dB', rotation=270, labelpad=12)
 
     fig.subplots_adjust(left=0.06, right=0.92, top=0.92, bottom=0.08)
@@ -682,11 +740,13 @@ def plot_gradcam_overlay_for_file_v3(model, file_path, sample_img_for_model,
     print("Saved gradcam image to:", out_path)
 
     try:
-        plt.show(block=True)
+        plt.show(block=False)
     except Exception:
         plt.pause(0.5)
 
     return heatmap, pred_idx, out_path
+
+
 
 # ----------------------------
 # Helper: esecuzione modelli tabulari con e senza PCA/LDA
@@ -953,8 +1013,8 @@ def main():
     if last_conv:
         sample_idx = 0
         sample_file = files_test[sample_idx]
-        sample_img_for_model = X_mel_test[sample_idx][..., 0]
-        heatmap, pred, out_path = plot_gradcam_overlay_for_file_v3(cnn_model, sample_file, sample_img_for_model,
+        sample_img_for_model = X_mel_test[sample_idx] # [6]
+        """heatmap, pred, out_path = plot_gradcam_overlay_for_file_v3(cnn_model, sample_file, sample_img_for_model,
                                                                    sr=SAMPLE_RATE, n_mels=128, hop_length=512, duration=30.0)
         try:
             if os.name == 'nt':
@@ -962,7 +1022,70 @@ def main():
         except Exception:
             pass
     else:
-        print("No Conv2D layer found for Grad-CAM.")
+        print("No Conv2D layer found for Grad-CAM.")"""
+
+
+    # Prepara l'input per la funzione compute_gradcam_heatmap [5]
+    # Questa parte replica la preparazione dell'input all'interno di plot_gradcam_overlay_for_file_v3 [1]
+    img_for_gradcam_input = np.array(sample_img_for_model)
+    if img_for_gradcam_input.ndim == 2:
+        img_for_gradcam_input = img_for_gradcam_input[..., np.newaxis] # Aggiunge la dimensione del canale
+    img_input_reshaped = np.expand_dims(img_for_gradcam_input, axis=0).astype(np.float32) # Aggiunge la dimensione del batch
+
+    # 1. Stampa il Mel-spectrogram originale separatamente
+    print("Visualizzazione del Mel-spectrogram originale...")
+    try:
+        y_raw, sr_loaded = librosa.load(sample_file, sr=SAMPLE_RATE, mono=True, duration=30.0) # Carica audio [7]
+        # Calcola Mel-spectrogram [7]
+        S = librosa.feature.melspectrogram(y=y_raw, sr=sr_loaded, n_mels=128, hop_length=512, fmax=sr_loaded/2)
+        S_db = librosa.power_to_db(S, ref=np.max) # Converti in dB [7]
+
+        n_frames_calc = S_db.shape[6]
+        time_end_calc = (n_frames_calc * 512) / sr_loaded # hop_length = 512
+        extent_calc = [0, time_end_calc, 0, sr_loaded/2]
+
+        plt.figure(figsize=(10, 5))
+        # Plot dello spettrogramma [2]
+        im_mel = plt.imshow(S_db, origin='lower', aspect='auto', extent=extent_calc, cmap='magma')
+        plt.colorbar(im_mel, format='%+2.0f dB', label='dB')
+        plt.title(f"Mel-spectrogram (dB)\n{os.path.basename(sample_file)}") # [2]
+        plt.xlabel("Tempo (s)") # [2]
+        plt.ylabel("Frequenza (Hz)") # [2]
+        plt.tight_layout()
+        plt.show() # Mostra la figura
+
+    except Exception as e:
+        print(f"Errore durante la generazione del Mel-spectrogram separato: {e}")
+
+
+    # 2. Calcola e stampa la heatmap Grad-CAM pura
+    print("Calcolo e visualizzazione della heatmap Grad-CAM pura...")
+    # Calcola la heatmap Grad-CAM [4]
+    heatmap, pred_idx = compute_gradcam_heatmap(cnn_model, img_input_reshaped, last_conv_name=last_conv)
+
+    plt.figure(figsize=(8, 6))
+    # Visualizza la heatmap [8]
+    plt.imshow(heatmap, cmap='jet', aspect='auto') # 'jet' è una colormap comune per le heatmap
+    plt.colorbar(label='Intensità di Attivazione')
+    plt.title(f"Grad-CAM Heatmap Pura (Indice Classe Predetta: {pred_idx})")
+    plt.tight_layout()
+    plt.show() # Mostra la figura
+
+    # 3. Stampa l'overlay Grad-CAM sul Mel-spectrogram (già gestito dalla funzione esistente)
+    print("Visualizzazione dell'overlay Grad-CAM sul Mel-spectrogram (già combinato in una figura)...")
+    # Questa chiamata genera la figura con due subplot: mel-spectrogram originale e l'overlay [2, 3]
+    # e salva l'immagine [9]
+    heatmap_overlay, pred_overlay, out_path = plot_gradcam_overlay_for_file_v3(cnn_model, sample_file, sample_img_for_model,
+                                            sr=SAMPLE_RATE, n_mels=128, hop_length=512, duration=30.0,
+                                            out_dir=os.getcwd()) # Assicura il salvataggio nella directory corrente
+    try:
+        if os.name == 'nt':
+            os.startfile(out_path) # [6]
+    except Exception: # [10]
+        pass
+
+    else:
+        print("Nessun layer Conv2D trovato per Grad-CAM.") # [10]
 
     # LIME example (usiamo il miglior modello tabulare per coerenza)
     print("\n8) LIME explanation sul miglior modello tabulare (per accuracy):")
