@@ -882,6 +882,28 @@ def main():
     le = LabelEncoder(); y_enc = le.fit_transform(y); classes = le.classes_
     print("Generi:", list(classes))
 
+    # --- INIZIO MODIFICA: Visualizzazione di un Mel-spectrogramma e di una MFCC-image di esempio ---
+    print("\nVisualizzazione di un Mel-spectrogramma di esempio per il primo file estratto:")
+
+    sample_file_path = df_tab['file'].iloc[0]   # percorso primo file
+    sample_genre_label = df_tab['genre'].iloc[0]  # etichetta primo file
+
+    plot_mel_spectrogram_with_db(sample_file_path, label=sample_genre_label, duration=3.0) 
+
+    print("\nVisualizzazione di una MFCC-image di esempio (primo campione estratto):")
+    first_mfcc_image = X_mfcc_img[0]  # primo campione
+
+    plt.figure(figsize=(6, 6))
+    plt.imshow(first_mfcc_image, cmap='viridis', origin='lower', aspect='auto')
+    plt.title(f"MFCC-image per {sample_genre_label}")
+    plt.colorbar(label='Ampiezza Normalizzata')
+    plt.xlabel("Tempo (frame riscalati)")
+    plt.ylabel("MFCC Coefficienti (riscalati)")
+    plt.tight_layout()
+    plt.show()
+# --- FINE MODIFICA ---
+
+
     # Tabular prep (includiamo fuzzy)
     X_tab_df = df_tab.drop(columns=["genre","file"]).copy()
     feature_names = X_tab_df.columns.tolist()
