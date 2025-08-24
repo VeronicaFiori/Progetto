@@ -309,8 +309,8 @@ def plot_mel_spectrogram_with_db(file_path, sr=SAMPLE_RATE, n_mels=128,
     if title_idx or title_label:
         title = f"{title} di {title_idx}{title_label}".strip().rstrip(',')
     ax.set_title(title)
-    ax.set_xlabel("Tempo (s)")
-    ax.set_ylabel("Frequenza Mel (Hz)")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Frequency Mel (Hz)")
     if created_fig:
         plt.tight_layout()
         plt.show()
