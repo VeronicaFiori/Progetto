@@ -309,8 +309,8 @@ def plot_mel_spectrogram_with_db(file_path, sr=SAMPLE_RATE, n_mels=128,
     if title_idx or title_label:
         title = f"{title} di {title_idx}{title_label}".strip().rstrip(',')
     ax.set_title(title)
-    ax.set_xlabel("Tempo (s)")
-    ax.set_ylabel("Frequenza Mel (Hz)")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Frequency Mel (Hz)")
     if created_fig:
         plt.tight_layout()
         plt.show()
@@ -711,16 +711,16 @@ def plot_gradcam_overlay_for_file_v3(model, file_path, sample_img_for_model,
     # spettrogramma sinistro (solo mel)
     im0 = ax0.imshow(S_db, origin='lower', aspect='auto', extent=extent, cmap=cmap)
     ax0.set_title(f"Mel-spectrogram (dB)\n{os.path.basename(file_path)}")
-    ax0.set_xlabel("Tempo (s)")
-    ax0.set_ylabel("Frequenza (Hz)")
+    ax0.set_xlabel("Time (s)")
+    ax0.set_ylabel("Frequency (Hz)")
 
     # spettrogramma destro + overlay grad-cam colorato
     im1 = ax1.imshow(S_db, origin='lower', aspect='auto', extent=extent, cmap=cmap)
     # overlay RGBA: dobbiamo passare extent e origin per allineare
     ax1.imshow(colored_heat, origin='lower', aspect='auto', extent=extent, interpolation='bilinear')
     ax1.set_title(f"Grad-CAM overlay (pred class idx={pred_idx})")
-    ax1.set_xlabel("Tempo (s)")
-    ax1.set_ylabel("Frequenza (Hz)")
+    ax1.set_xlabel("Time (s)")
+    ax1.set_ylabel("Frequency (Hz)")
 
     # colorbar relativa al mel-spectrogram (dB)
     cbar = fig.colorbar(im0, cax=cax, format='%+2.0f dB')
@@ -832,9 +832,9 @@ def plot_time_and_freq(files):
 
         # --- Dominio del tempo ---
         librosa.display.waveshow(y, sr=sr, ax=axs[i, 0])
-        axs[i, 0].set_title(f"{genre} — dominio del tempo")
-        axs[i, 0].set_xlabel("Tempo (s)")
-        axs[i, 0].set_ylabel("Ampiezza")
+        axs[i, 0].set_title(f"{genre} — time domain")
+        axs[i, 0].set_xlabel("Time (s)")
+        axs[i, 0].set_ylabel("Amplitude")
         axs[i, 0].set_ylim(-1, 1)          # fisso da -1 a 1
         axs[i, 0].set_yticks([-1, 0, 1])   # solo questi tre valori
 
@@ -849,9 +849,9 @@ def plot_time_and_freq(files):
         amp_m1_1 = amp_norm * 2.0 - 1.0
 
         axs[i, 1].plot(freq, amp_m1_1, linewidth=0.8)
-        axs[i, 1].set_title(f"{genre} — spettro in frequenza (normalizzato)")
-        axs[i, 1].set_xlabel("Frequenza (Hz)")
-        axs[i, 1].set_ylabel("Ampiezza (norm.)")
+        axs[i, 1].set_title(f"{genre} — frequency spectrum (normalized)")
+        axs[i, 1].set_xlabel("Frequency (Hz)")
+        axs[i, 1].set_ylabel("Amplitude (norm.)")
         axs[i, 1].set_ylim(-1, 1)
         axs[i, 1].set_yticks([-1, 0, 1])
 
@@ -892,10 +892,10 @@ def main():
 
     plt.figure(figsize=(6, 6))
     plt.imshow(first_mfcc_image, cmap='viridis', origin='lower', aspect='auto')
-    plt.title(f"MFCC-image per {sample_genre_label}")
-    plt.colorbar(label='Ampiezza Normalizzata')
-    plt.xlabel("Tempo (frame riscalati)")
-    plt.ylabel("MFCC Coefficienti (riscalati)")
+    plt.title(f"MFCC-image for {sample_genre_label}")
+    plt.colorbar(label='Normalized Amplitude')
+    plt.xlabel("Time (rescaled frames)")
+    plt.ylabel("MFCC Coefficients (rescaled)")
     plt.tight_layout()
     plt.show()
 # --- FINE MODIFICA ---
@@ -957,7 +957,7 @@ def main():
 
 
     # LSTM su sequenze MFCC
-    print("\n5a) LSTM su sequenze MFCC (senza PCA)...")
+    print("\n5a) LSTM su sequenze MFCC (without  PCA)...")
     N, seq_len, n_mfcc = X_seq.shape
     X_seq_train, X_seq_test, y_seq_train, y_seq_test = train_test_split(
         X_seq, y_enc, test_size=TEST_SIZE, stratify=y_enc, random_state=RANDOM_STATE)
@@ -970,10 +970,10 @@ def main():
                                                 callbacks=[es_lstm_no_pca], verbose=2)
     lstm_proba_no_pca = lstm_model_no_pca.predict(X_seq_test)
     lstm_pred_no_pca = np.argmax(lstm_proba_no_pca, axis=1)
-    print("LSTM (senza PCA) accuracy:", accuracy_score(y_seq_test, lstm_pred_no_pca))
+    print("LSTM (without  PCA) accuracy:", accuracy_score(y_seq_test, lstm_pred_no_pca))
     print(classification_report(y_seq_test, lstm_pred_no_pca, target_names=classes, zero_division=0))
-    plot_confusion(confusion_matrix(y_seq_test, lstm_pred_no_pca), classes, title="LSTM (senza PCA) Confusion")
-    plot_training_curves(history_lstm_no_pca, title_prefix="LSTM (MFCC seq senza PCA)")
+    plot_confusion(confusion_matrix(y_seq_test, lstm_pred_no_pca), classes, title="LSTM (without  PCA) Confusion")
+    plot_training_curves(history_lstm_no_pca, title_prefix="LSTM (MFCC seq without  PCA)")
 
     print("\n5b) LSTM su sequenze MFCC con PCA per frame...")
     X_seq_flat = X_seq.reshape(N, seq_len * n_mfcc)
@@ -1001,7 +1001,7 @@ def main():
     lstm_pred_pca = np.argmax(lstm_proba_pca, axis=1)
     print("LSTM (con PCA) accuracy:", accuracy_score(y_seq_test, lstm_pred_pca))
     print(classification_report(y_seq_test, lstm_pred_pca, target_names=classes, zero_division=0))
-    plot_confusion(confusion_matrix(y_seq_test, lstm_pred_pca), classes, title="LSTM (PCA sui frame) Confusion")
+    plot_confusion(confusion_matrix(y_seq_test, lstm_pred_pca), classes, title="LSTM (PCA on frames) Confusion")
     plot_training_curves(history_lstm_pca, title_prefix="LSTM (MFCC seq + PCA)")
 
 
@@ -1068,8 +1068,8 @@ def main():
         im_mel = plt.imshow(S_db, origin='lower', aspect='auto', extent=extent_calc, cmap='magma')
         plt.colorbar(im_mel, format='%+2.0f dB', label='dB')
         plt.title(f"Mel-spectrogram (dB)\n{os.path.basename(sample_file)}") # [2]
-        plt.xlabel("Tempo (s)") # [2]
-        plt.ylabel("Frequenza (Hz)") # [2]
+        plt.xlabel("Time (s)") # [2]
+        plt.ylabel("Frequency (Hz)") # [2]
         plt.tight_layout()
         plt.show() # Mostra la figura
 
@@ -1085,8 +1085,8 @@ def main():
     plt.figure(figsize=(8, 6))
     # Visualizza la heatmap [8]
     plt.imshow(heatmap, cmap='jet', aspect='auto') # 'jet' è una colormap comune per le heatmap
-    plt.colorbar(label='Intensità di Attivazione')
-    plt.title(f"Grad-CAM Heatmap Pura (Indice Classe Predetta: {pred_idx})")
+    plt.colorbar(label='Activation Intensity')
+    plt.title(f"Pure Grad-CAM Heatmap (Predicted Class Index: {pred_idx})")
     plt.tight_layout()
     plt.show() # Mostra la figura
 
