@@ -892,10 +892,10 @@ def main():
 
     plt.figure(figsize=(6, 6))
     plt.imshow(first_mfcc_image, cmap='viridis', origin='lower', aspect='auto')
-    plt.title(f"MFCC-image per {sample_genre_label}")
-    plt.colorbar(label='Ampiezza Normalizzata')
-    plt.xlabel("Tempo (frame riscalati)")
-    plt.ylabel("MFCC Coefficienti (riscalati)")
+    plt.title(f"MFCC-image for {sample_genre_label}")
+    plt.colorbar(label='Normalized Amplitude')
+    plt.xlabel("Time (rescaled frames)")
+    plt.ylabel("MFCC Coefficients (rescaled)")
     plt.tight_layout()
     plt.show()
 # --- FINE MODIFICA ---
@@ -957,7 +957,7 @@ def main():
 
 
     # LSTM su sequenze MFCC
-    print("\n5a) LSTM su sequenze MFCC (senza PCA)...")
+    print("\n5a) LSTM su sequenze MFCC (without  PCA)...")
     N, seq_len, n_mfcc = X_seq.shape
     X_seq_train, X_seq_test, y_seq_train, y_seq_test = train_test_split(
         X_seq, y_enc, test_size=TEST_SIZE, stratify=y_enc, random_state=RANDOM_STATE)
@@ -970,10 +970,10 @@ def main():
                                                 callbacks=[es_lstm_no_pca], verbose=2)
     lstm_proba_no_pca = lstm_model_no_pca.predict(X_seq_test)
     lstm_pred_no_pca = np.argmax(lstm_proba_no_pca, axis=1)
-    print("LSTM (senza PCA) accuracy:", accuracy_score(y_seq_test, lstm_pred_no_pca))
+    print("LSTM (without  PCA) accuracy:", accuracy_score(y_seq_test, lstm_pred_no_pca))
     print(classification_report(y_seq_test, lstm_pred_no_pca, target_names=classes, zero_division=0))
-    plot_confusion(confusion_matrix(y_seq_test, lstm_pred_no_pca), classes, title="LSTM (senza PCA) Confusion")
-    plot_training_curves(history_lstm_no_pca, title_prefix="LSTM (MFCC seq senza PCA)")
+    plot_confusion(confusion_matrix(y_seq_test, lstm_pred_no_pca), classes, title="LSTM (without  PCA) Confusion")
+    plot_training_curves(history_lstm_no_pca, title_prefix="LSTM (MFCC seq without  PCA)")
 
     print("\n5b) LSTM su sequenze MFCC con PCA per frame...")
     X_seq_flat = X_seq.reshape(N, seq_len * n_mfcc)
@@ -1001,7 +1001,7 @@ def main():
     lstm_pred_pca = np.argmax(lstm_proba_pca, axis=1)
     print("LSTM (con PCA) accuracy:", accuracy_score(y_seq_test, lstm_pred_pca))
     print(classification_report(y_seq_test, lstm_pred_pca, target_names=classes, zero_division=0))
-    plot_confusion(confusion_matrix(y_seq_test, lstm_pred_pca), classes, title="LSTM (PCA sui frame) Confusion")
+    plot_confusion(confusion_matrix(y_seq_test, lstm_pred_pca), classes, title="LSTM (PCA on frames) Confusion")
     plot_training_curves(history_lstm_pca, title_prefix="LSTM (MFCC seq + PCA)")
 
 
@@ -1068,8 +1068,8 @@ def main():
         im_mel = plt.imshow(S_db, origin='lower', aspect='auto', extent=extent_calc, cmap='magma')
         plt.colorbar(im_mel, format='%+2.0f dB', label='dB')
         plt.title(f"Mel-spectrogram (dB)\n{os.path.basename(sample_file)}") # [2]
-        plt.xlabel("Tempo (s)") # [2]
-        plt.ylabel("Frequenza (Hz)") # [2]
+        plt.xlabel("Time (s)") # [2]
+        plt.ylabel("Frequency (Hz)") # [2]
         plt.tight_layout()
         plt.show() # Mostra la figura
 
@@ -1085,8 +1085,8 @@ def main():
     plt.figure(figsize=(8, 6))
     # Visualizza la heatmap [8]
     plt.imshow(heatmap, cmap='jet', aspect='auto') # 'jet' è una colormap comune per le heatmap
-    plt.colorbar(label='Intensità di Attivazione')
-    plt.title(f"Grad-CAM Heatmap Pura (Indice Classe Predetta: {pred_idx})")
+    plt.colorbar(label='Activation Intensity')
+    plt.title(f"Pure Grad-CAM Heatmap (Predicted Class Index: {pred_idx})")
     plt.tight_layout()
     plt.show() # Mostra la figura
 
