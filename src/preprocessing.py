@@ -535,16 +535,13 @@ def plot_training_curves(history, title_prefix="Model"):
 # LIME wrapper per LSTM (usiamo features tabulari come interpretable)
 # ----------------------------
 
-def make_lstm_predict_proba_wrapper(lstm_model, scaler_tab, seq_len=SEQ_LEN, n_mfcc=N_MFCC):
+def make_lstm_proba_wrapper(lstm_model, seq_len=SEQ_LEN, n_mfcc=N_MFCC):
     def predict_proba_from_tab(X_tab):
-        X_tab_scaled = scaler_tab.transform(X_tab)
-        if X_tab.shape[1] >= n_mfcc:
-            mfcc_means = X_tab_scaled[:, :n_mfcc]
-        else:
-            mfcc_means = np.zeros((X_tab.shape[0], n_mfcc))
-        seqs = np.repeat(mfcc_means[:, np.newaxis, :], seq_len, axis=1)
-        probs = lstm_model.predict(seqs, verbose=0)
-        return probs
+        # forza sempre array 2D (batch_size, seq_len*n_mfcc)
+        X_tab = np.atleast_2d(X_tab)
+        # reshape in sequenze (batch_size, seq_len, n_mfcc)
+        X_seq = X_tab.reshape(-1, seq_len, n_mfcc)
+        return lstm_model.predict(X_seq, verbose=0)
     return predict_proba_from_tab
 
 # ----------------------------
@@ -1109,30 +1106,42 @@ def main():
     else:
         print("Nessun layer Conv2D trovato per Grad-CAM.") # [10]
 
-    # LIME example (usiamo il miglior modello tabulare per coerenza)
-    print("\n8) LIME explanation sul miglior modello tabulare (per accuracy):")
-    best_key = None; best_acc = -1.0
-    for k, res in tab_results.items():
-        acc = res['metrics']['accuracy']
-        if acc > best_acc:
-            best_acc = acc; best_key = k
-    if best_key is not None:
-        best_model = tab_results[best_key]['model']
-        # Per Lime usiamo lo spazio *pre-clf* della pipeline (input originale)
-        explainer_lime = LimeTabularExplainer(training_data=X_train, feature_names=feature_names,
-                                              class_names=list(classes), mode='classification')
+   
+   
+   
+    # LIME example per LSTM
+    print("\n8) LIME explanation sul miglior modello LSTM:")
+    best_lstm_model = lstm_model_no_pca
+
+    # Creo la funzione predict_proba specifica per LSTM
+    predict_proba_for_lstm = make_lstm_proba_wrapper(best_lstm_model, seq_len=seq_len, n_mfcc=n_mfcc)
+
+    n_features = seq_len * n_mfcc
+    feature_names_lime = [f"mfcc_{i}" for i in range(n_features)]
+    
+    # Creo l'explainer LIME
+    explainer_lime = LimeTabularExplainer(
+        training_data=X_seq_train.reshape(X_seq_train.shape[0], -1),
+        feature_names=feature_names_lime,
+        class_names=list(classes),
+        mode='classification'
+    )
+    i = 0
+    try:
+        exp = explainer_lime.explain_instance(
+            X_seq_test[i].reshape(-1),
+            predict_proba_for_lstm,
+            num_features=10
+        )
+        print("LIME explanation for LSTM sample", i, "->", exp.as_list())
         try:
-            def predict_proba_lime(X):
-                return best_model.predict_proba(X)
-            i = 0
-            exp = explainer_lime.explain_instance(X_test[i], predict_proba_lime, num_features=10)
-            print("LIME explanation for sample", i, "->", exp.as_list())
-            try:
-                fig = exp.as_pyplot_figure(); plt.show()
-            except Exception:
-                pass
-        except Exception as e:
-            print("LIME error:", e)
+            fig = exp.as_pyplot_figure()
+            plt.show()
+        except Exception:
+            pass
+    except Exception as e:
+        print("LIME error:", e)
+
 
     # t-SNE su MFCC mean vectors
     print("\n9) t-SNE su vettori MFCC mean (esempio con max 1000 sample):")
