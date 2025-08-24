@@ -711,16 +711,16 @@ def plot_gradcam_overlay_for_file_v3(model, file_path, sample_img_for_model,
     # spettrogramma sinistro (solo mel)
     im0 = ax0.imshow(S_db, origin='lower', aspect='auto', extent=extent, cmap=cmap)
     ax0.set_title(f"Mel-spectrogram (dB)\n{os.path.basename(file_path)}")
-    ax0.set_xlabel("Tempo (s)")
-    ax0.set_ylabel("Frequenza (Hz)")
+    ax0.set_xlabel("Time (s)")
+    ax0.set_ylabel("Frequency (Hz)")
 
     # spettrogramma destro + overlay grad-cam colorato
     im1 = ax1.imshow(S_db, origin='lower', aspect='auto', extent=extent, cmap=cmap)
     # overlay RGBA: dobbiamo passare extent e origin per allineare
     ax1.imshow(colored_heat, origin='lower', aspect='auto', extent=extent, interpolation='bilinear')
     ax1.set_title(f"Grad-CAM overlay (pred class idx={pred_idx})")
-    ax1.set_xlabel("Tempo (s)")
-    ax1.set_ylabel("Frequenza (Hz)")
+    ax1.set_xlabel("Time (s)")
+    ax1.set_ylabel("Frequency (Hz)")
 
     # colorbar relativa al mel-spectrogram (dB)
     cbar = fig.colorbar(im0, cax=cax, format='%+2.0f dB')
@@ -832,9 +832,9 @@ def plot_time_and_freq(files):
 
         # --- Dominio del tempo ---
         librosa.display.waveshow(y, sr=sr, ax=axs[i, 0])
-        axs[i, 0].set_title(f"{genre} — dominio del tempo")
-        axs[i, 0].set_xlabel("Tempo (s)")
-        axs[i, 0].set_ylabel("Ampiezza")
+        axs[i, 0].set_title(f"{genre} — time domain")
+        axs[i, 0].set_xlabel("Time (s)")
+        axs[i, 0].set_ylabel("Amplitude")
         axs[i, 0].set_ylim(-1, 1)          # fisso da -1 a 1
         axs[i, 0].set_yticks([-1, 0, 1])   # solo questi tre valori
 
@@ -849,9 +849,9 @@ def plot_time_and_freq(files):
         amp_m1_1 = amp_norm * 2.0 - 1.0
 
         axs[i, 1].plot(freq, amp_m1_1, linewidth=0.8)
-        axs[i, 1].set_title(f"{genre} — spettro in frequenza (normalizzato)")
-        axs[i, 1].set_xlabel("Frequenza (Hz)")
-        axs[i, 1].set_ylabel("Ampiezza (norm.)")
+        axs[i, 1].set_title(f"{genre} — frequency spectrum (normalized)")
+        axs[i, 1].set_xlabel("Frequency (Hz)")
+        axs[i, 1].set_ylabel("Amplitude (norm.)")
         axs[i, 1].set_ylim(-1, 1)
         axs[i, 1].set_yticks([-1, 0, 1])
 
