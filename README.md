@@ -1,6 +1,11 @@
-# Progetto di Deep Learning per Riconoscimento Musicale e Generazione Artistica
+# Music Genre Classification on GTZAN
 
-Questo progetto si concentra sulla generazione di musica con LSTM e sulla classificazione di generi musicali con CNN. Il progetto include i seguenti moduli:
+Project on **automatic music genre classification** using the **GTZAN dataset**, combining **Machine Learning, Deep Learning**, and **Explainable AI (XAI)** approaches.
 
-1. **LSTM** per la generazione musicale.
-2. **CNN** per la classificazione di generi musicali tramite spettrogrammi.
+## Methods
+- **Deep Learning:** CNN on mel-spectrograms, LSTM on MFCC sequences  
+- **Machine Learning:** Random Forest, SVM, Logistic Regression, KNN  
+- **Dimensionality Reduction:** PCA and LDA to improve class separation  
+- **Explainability:** Grad-CAM (CNN), LIME (LSTM), t-SNE (feature visualization)
+
+Goal: integrate **multiple methodologies** to achieve both solid performance and **explainable results** in music genre recognition.
