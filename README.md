@@ -9,3 +9,5 @@ Project on **automatic music genre classification** using the **GTZAN dataset**,
 - **Explainability:** Grad-CAM (CNN), LIME (LSTM), t-SNE (feature visualization)
 
 Goal: integrate **multiple methodologies** to achieve both solid performance and **explainable results** in music genre recognition.
+
+- Veronica P. Fiori and Veronica Catalano
